@@ -60,5 +60,6 @@ buttoms_frame.pack(side=TOP)
 
 # configuring the scrollbar
 scrollbar.config(command=text_info.yview)
-  
+
 root.mainloop()
+# Teste de atualização

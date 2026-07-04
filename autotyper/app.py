@@ -7,9 +7,12 @@ from tkinter import filedialog, Menu
 import ttkbootstrap as ttk
 from ttkbootstrap.widgets.scrolled import ScrolledText
 
-from .config import TRANSLATIONS, SPEED_PROFILES, StatusStyle, platform_mono_font
+from .config import (TRANSLATIONS, SPEED_PROFILES, StatusStyle,
+                     platform_mono_font, AI_MODEL, AI_MODELS)
 from .markers import parse_instructions
 from .engine import TypingEngine, TypingCallbacks
+from . import ai
+from .ai import AIGenerator, AICallbacks
 
 
 class TyperApp(ttk.Window):
@@ -20,6 +23,7 @@ class TyperApp(ttk.Window):
 
         self.lang    = lang
         self._engine = TypingEngine()
+        self._ai     = AIGenerator()
 
         self.geometry("820x860")
         self.minsize(width=410, height=500)
@@ -28,6 +32,7 @@ class TyperApp(ttk.Window):
         self._build_header()
         self._build_settings(interval_ms, wait_s)
         self._check_wayland()
+        self._build_ai_panel()
         self._build_text_area()
         self._build_char_counter()
         self._build_progress()
@@ -132,11 +137,49 @@ class TyperApp(ttk.Window):
                                      bootstyle="warning-outline", state="disabled")
         self._btn_pause.pack(side="top")
 
+    def _build_ai_panel(self) -> None:
+        af = ttk.Labelframe(self, text=self.t("ai_title"), bootstyle="primary")
+        af.pack(side="top", fill="x", padx=20, pady=(0, 8))
+        af.columnconfigure(0, weight=1)
+        self._af = af
+
+        self._lbl_ai = ttk.Label(af, text=self.t("ai_prompt_label"))
+        self._lbl_ai.grid(row=0, column=0, columnspan=3,
+                          padx=15, pady=(8, 2), sticky="w")
+
+        self._ai_entry = ttk.Entry(af)
+        self._ai_entry.grid(row=1, column=0, padx=(15, 5), pady=(0, 4), sticky="ew")
+        self._ai_entry.bind("<Return>", lambda _e: self.generate_with_ai())
+
+        self._ai_model_var = ttk.StringVar(value=self._model_display(AI_MODEL))
+        self._ai_model_combo = ttk.Combobox(af, textvariable=self._ai_model_var,
+                                            values=[name for _, name in AI_MODELS],
+                                            state="readonly", width=12,
+                                            bootstyle="secondary")
+        self._ai_model_combo.grid(row=1, column=1, padx=5, pady=(0, 4))
+
+        self._btn_ai = ttk.Button(af, text=self.t("ai_generate_btn"), width=14,
+                                  command=self.generate_with_ai, bootstyle="primary")
+        self._btn_ai.grid(row=1, column=2, padx=(5, 15), pady=(0, 4), sticky="e")
+
+        self._lbl_ai_hint = ttk.Label(af, text=self.t("ai_hint"),
+                                      font=("", 9), bootstyle="secondary")
+        self._lbl_ai_hint.grid(row=2, column=0, columnspan=3,
+                               padx=15, pady=(0, 8), sticky="w")
+
+    def _model_display(self, model_id: str) -> str:
+        return next((name for mid, name in AI_MODELS if mid == model_id), model_id)
+
+    def _selected_model(self) -> str:
+        name = self._ai_model_var.get()
+        return next((mid for mid, mname in AI_MODELS if mname == name), AI_MODEL)
+
     def _build_text_area(self) -> None:
         tf = ttk.Frame(self)
         tf.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 2))
         self._text_info = ScrolledText(tf, height=8, width=100, font=platform_mono_font())
         self._text_info.pack(fill="both", expand=True)
+        self._text_info.text.configure(undo=True)   # Ctrl+Z recovers AI replacement
         self._text_info.bind("<KeyRelease>", lambda _e: self._update_char_count())
 
     def _build_char_counter(self) -> None:
@@ -320,6 +363,11 @@ class TyperApp(ttk.Window):
         self._chk_chunk.configure(text=self.t("chunk_label"))
         self._insert_btn.configure(text=self.t("insert_btn"))
         self._lbl_marker_hint.configure(text=self.t("marker_hint"))
+        self._af.configure(text=self.t("ai_title"))
+        self._lbl_ai.configure(text=self.t("ai_prompt_label"))
+        self._lbl_ai_hint.configure(text=self.t("ai_hint"))
+        if not self._ai.is_generating:
+            self._btn_ai.configure(text=self.t("ai_generate_btn"))
         self._log_frame.configure(text=self.t("log_title"))
         self._status_label.configure(text=self.t("status_ready"))
 
@@ -459,6 +507,8 @@ class TyperApp(ttk.Window):
         self._btn_action.configure(state="normal", text=self.t("stop_btn"),
                                    bootstyle="danger", command=self.request_stop)
         self._btn_pause.configure(state="normal", text=self.t("pause_btn"))
+        self._btn_ai.configure(state="disabled")
+        self._ai_model_combo.configure(state="disabled")
         self.update_status(self.t("status_start"), StatusStyle.WARNING)
 
         # Build callbacks — all called from worker thread, so wrap with after(0,...)
@@ -479,6 +529,67 @@ class TyperApp(ttk.Window):
         )
 
         self._engine.start(text, wait_s, interval_s, chunk_mode, callbacks)
+
+    # -----------------------------------------------------------------------
+    # AI generation (Anthropic Claude)
+    # -----------------------------------------------------------------------
+    def generate_with_ai(self) -> None:
+        # --- Read the prompt in the main thread, then hand off to a worker ---
+        if self._engine.is_typing or self._ai.is_generating:
+            return
+
+        prompt = self._ai_entry.get().strip()
+        if not prompt:
+            self.update_status(self.t("ai_err_empty"), StatusStyle.ERROR)
+            return
+        if not ai.is_available():
+            self.update_status(self.t("ai_err_lib"), StatusStyle.ERROR)
+            return
+        if not ai.has_credentials():
+            self.update_status(self.t("ai_err_auth"), StatusStyle.ERROR)
+            return
+
+        self._btn_ai.configure(state="disabled", text=self.t("ai_generating_btn"))
+        self._ai_model_combo.configure(state="disabled")
+        self._btn_action.configure(state="disabled")
+        self.update_status(self.t("ai_generating"), StatusStyle.WARNING)
+        self._ai_streamed = False   # editor is cleared on the first chunk, not before
+
+        callbacks = AICallbacks(
+            on_start=lambda: self.after(0, self._ai_on_start),
+            on_text=lambda chunk: self.after(0, lambda c=chunk: self._ai_on_text(c)),
+            on_done=lambda full: self.after(0, self._ai_on_done),
+            on_error=lambda e: self.after(0, lambda e=e: self._ai_on_error(e)),
+        )
+        self._ai.generate(prompt, self.lang, self._selected_model(), callbacks)
+
+    def _ai_on_start(self) -> None:
+        self._log_append(self.t("ai_generating"))
+
+    def _ai_on_text(self, chunk: str) -> None:
+        if not self._ai_streamed:        # clear only once real output arrives
+            self._text_info.delete("1.0", "end")
+            self._ai_streamed = True
+        self._text_info.insert("end", chunk)
+        self._text_info.see("end")
+
+    def _ai_on_done(self) -> None:
+        self._update_char_count()
+        self._btn_ai.configure(state="normal", text=self.t("ai_generate_btn"))
+        self._ai_model_combo.configure(state="readonly")
+        self._btn_action.configure(state="normal")
+        self._status_label.configure(text=self.t("ai_done"), bootstyle=StatusStyle.SUCCESS)
+
+    def _ai_on_error(self, e: Exception) -> None:
+        self._btn_ai.configure(state="normal", text=self.t("ai_generate_btn"))
+        self._ai_model_combo.configure(state="readonly")
+        self._btn_action.configure(state="normal")
+        if ai.is_auth_error(e):
+            msg = self.t("ai_err_auth")            # bad/expired credential
+        else:
+            msg = self.t("ai_err_api", e=e)
+        self._status_label.configure(text=msg, bootstyle=StatusStyle.ERROR)
+        self._log_append(f"AI ERROR: {e}")
 
     def _on_chunk_done(self, cur: int, total: int) -> None:
         status = self.t("status_chunk", cur=cur, total=total)
@@ -506,3 +617,5 @@ class TyperApp(ttk.Window):
         self._btn_action.configure(state="normal", text=self.t("start_btn"),
                                    bootstyle="success", command=self.start_typing_thread)
         self._btn_pause.configure(state="disabled", text=self.t("pause_btn"))
+        self._btn_ai.configure(state="normal")
+        self._ai_model_combo.configure(state="readonly")

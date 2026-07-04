@@ -9,6 +9,9 @@ AutoTyper é uma ferramenta de desktop desenvolvida em Python que simula digita�
 | Funcionalidade | Descrição |
 | --- | --- |
 | Digitação automatizada | Digita qualquer texto em qualquer campo ou janela ativa |
+| **Assistente IA** | Descreva em linguagem natural e a IA (Claude) gera o texto/comandos a digitar, opcionalmente com marcadores de automação |
+| **Seletor de modelo** | Escolha entre Opus 4.8, Sonnet 5 ou Haiku 4.5 |
+| **Login por browser** | Reaproveita o login OAuth do Claude Code / plugin do VS Code — sem exportar chave de API |
 | Velocidade configurável | Ajuste o intervalo entre teclas em milissegundos |
 | Marcadores embutidos | `[[pause:N]]`, `[[speed:N]]`, `[[key:ctrl+c]]` controlam o comportamento mid-texto |
 | Menu de inserção | Dropdown para inserir marcadores de timing, teclas de função, modificadores e combinações |
@@ -28,13 +31,14 @@ AutoTyper é uma ferramenta de desktop desenvolvida em Python que simula digita�
 - Python **3.11** ou superior
 - [`ttkbootstrap`](https://ttkbootstrap.readthedocs.io/) >= 1.20.0
 - [`pynput`](https://pynput.readthedocs.io/) >= 1.7.0
+- [`anthropic`](https://github.com/anthropics/anthropic-sdk-python) >= 0.40.0 *(opcional — só para o Assistente IA)*
 
 ---
 
 ## 🚀 Instalação
 
 ```bash
-git clone https://github.com/seu-usuario/typer.git
+git clone git@gitea.durso.tec.br:fernando/typer.git
 cd typer
 python -m venv venv
 venv\Scripts\activate     # Windows
@@ -74,6 +78,25 @@ Insira marcadores diretamente no texto para controlar o comportamento durante a 
 
 Use o botão **📥 Inserir Marcador ▾** para inserir qualquer marcador via menu.
 
+### 🤖 Assistente IA
+
+No painel **🤖 Assistente IA**, descreva em linguagem natural o que você quer digitar (ex.: *"script de backup do /etc com rotação de 7 dias"*, *"comandos para diagnosticar rede que não sobe"*). A IA (Claude) gera o texto/comandos — podendo usar os marcadores de automação quando fizer sentido — e o resultado aparece **no editor para revisão**. Você revisa e clica em **INICIAR** normalmente. Ideal para consoles remotos onde não há copiar-colar.
+
+- **Seletor de modelo:** escolha **Opus 4.8** (mais capaz), **Sonnet 5** (equilíbrio) ou **Haiku 4.5** (mais rápido/leve) no combo ao lado do campo.
+- **Segurança:** o texto atual só é substituído quando a primeira parte da resposta chega, e `Ctrl+Z` recupera o conteúdo anterior.
+
+#### Autenticação (sem exportar chave)
+
+O assistente resolve credenciais na mesma ordem que o Claude Code e a CLI da Anthropic, **sem armazenar nada**:
+
+1. Variável de ambiente `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`
+2. Perfil OAuth do `ant auth login` (`~/.config/anthropic/`)
+3. **Login por browser do Claude Code / plugin do VS Code** (`~/.claude/.credentials.json`)
+
+Se você já usa o Claude Code, o item 3 funciona automaticamente — nenhum passo extra. Essa opção consome a cota da sua assinatura Claude (compartilhada com o Claude Code); uso pesado simultâneo de Opus nos dois pode gerar `429` (troque para Haiku nesse caso).
+
+> Sem o pacote `anthropic` ou sem credencial, o painel continua visível e apenas a geração exibe um erro claro — o restante do app não é afetado.
+
 ### Modo headless (sem GUI)
 
 ```bash
@@ -97,9 +120,10 @@ typer.py               — shim de compatibilidade (delega para autotyper)
 autotyper/
 ├── __init__.py        — pacote
 ├── __main__.py        — entry point de `python -m autotyper`
-├── config.py          — traduções, perfis de velocidade, StatusStyle
+├── config.py          — traduções, perfis de velocidade, StatusStyle, modelos de IA
 ├── markers.py         — parsing de marcadores embutidos
 ├── engine.py          — TypingEngine + TypingCallbacks (sem dependência de Tkinter)
+├── ai.py              — AIGenerator + resolução de credenciais (sem dependência de Tkinter)
 ├── app.py             — TyperApp (GUI, Tkinter/ttkbootstrap)
 └── cli.py             — parse_args() + run_headless()
 requirements.txt

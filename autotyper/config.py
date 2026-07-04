@@ -60,6 +60,18 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "prof_fast":      "Fast   (50 ms)",
         "prof_turbo":     "Turbo  (10 ms)",
         "prof_custom":    "Custom",
+        # AI assistant
+        "ai_title":         " 🤖 AI Assistant ",
+        "ai_prompt_label":  "Describe what you want typed (commands, script, config…):",
+        "ai_generate_btn":  "✨ Generate",
+        "ai_generating_btn":"⏳ Generating…",
+        "ai_hint":          "Generated text lands in the editor below — review it, then press START.",
+        "ai_generating":    "Generating with AI…",
+        "ai_done":          "AI generation complete — review before typing.",
+        "ai_err_empty":     "Error: describe what you want the AI to type first.",
+        "ai_err_auth":      "Error: not authenticated. Log in with your Claude Code / VS Code browser session, run 'ant auth login', or set ANTHROPIC_API_KEY.",
+        "ai_err_lib":       "Error: the 'anthropic' package is not installed (pip install anthropic).",
+        "ai_err_api":       "AI error: {e}",
     },
     "pt": {
         # Cabeçalho
@@ -117,6 +129,18 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "prof_fast":      "Rápido   (50 ms)",
         "prof_turbo":     "Turbo    (10 ms)",
         "prof_custom":    "Personalizado",
+        # Assistente IA
+        "ai_title":         " 🤖 Assistente IA ",
+        "ai_prompt_label":  "Descreva o que quer digitar (comandos, script, configuração…):",
+        "ai_generate_btn":  "✨ Gerar",
+        "ai_generating_btn":"⏳ Gerando…",
+        "ai_hint":          "O texto gerado aparece no editor abaixo — revise e depois clique em INICIAR.",
+        "ai_generating":    "Gerando com IA…",
+        "ai_done":          "Geração da IA concluída — revise antes de digitar.",
+        "ai_err_empty":     "Erro: descreva primeiro o que a IA deve digitar.",
+        "ai_err_auth":      "Erro: não autenticado. Faça login pelo browser (Claude Code / VS Code), rode 'ant auth login' ou defina ANTHROPIC_API_KEY.",
+        "ai_err_lib":       "Erro: o pacote 'anthropic' não está instalado (pip install anthropic).",
+        "ai_err_api":       "Erro da IA: {e}",
     },
 }
 
@@ -140,3 +164,65 @@ class StatusStyle(enum.StrEnum):
 def platform_mono_font(size: int = 13) -> tuple[str, int]:
     fonts = {"Windows": "Consolas", "Darwin": "Menlo"}
     return (fonts.get(platform.system(), "Monospace"), size)
+
+
+# ---------------------------------------------------------------------------
+# AI assistant (Anthropic Claude)
+# ---------------------------------------------------------------------------
+AI_MODEL = "claude-opus-4-8"   # default selection
+
+# Selectable models, in menu order: (model_id, display name).
+AI_MODELS: list[tuple[str, str]] = [
+    ("claude-opus-4-8",  "Opus 4.8"),
+    ("claude-sonnet-5",  "Sonnet 5"),
+    ("claude-haiku-4-5", "Haiku 4.5"),
+]
+
+# Models that accept thinking={"type": "adaptive"} (Haiku 4.5 does not).
+_AI_ADAPTIVE_MODELS = {"claude-opus-4-8", "claude-sonnet-5"}
+
+
+def model_supports_adaptive(model_id: str) -> bool:
+    return model_id in _AI_ADAPTIVE_MODELS
+
+# System prompt shared by both languages, with a per-language instruction on
+# what language to write comments in. Output goes straight into the typing
+# buffer, so the model must return only the raw text to be typed.
+_AI_SYSTEM_BASE = """\
+You generate text that an auto-typing tool will type keystroke-by-keystroke \
+into the currently focused OS window. The main use case is remote server \
+consoles (KVM over IP, iDRAC, iLO, serial) where the clipboard and paste are \
+unavailable, so everything must be typed.
+
+OUTPUT RULES (critical):
+- Output ONLY the exact text/commands to be typed. No explanations, no \
+commentary, no surrounding prose.
+- Never wrap the output in Markdown code fences (```), quotes, or headings — \
+they would be typed literally.
+- The output is inserted verbatim. Each newline you emit becomes an Enter \
+keypress, so a trailing newline runs the last command.
+- Prefer POSIX-portable commands unless the user specifies an OS or shell.
+
+AUTOMATION MARKERS (optional — use only when timing or special keys are \
+actually needed, otherwise plain text is better):
+- [[pause:N]]        wait N seconds (e.g. after starting a service)
+- [[speed:N]]        set the typing interval to N milliseconds
+- [[speed:reset]]    restore the base typing speed
+- [[key:name]]       press a special key or chord, e.g. [[key:enter]], \
+[[key:tab]], [[key:ctrl+c]], [[key:F5]], [[key:up]]
+
+SAFETY: If the request implies a destructive or irreversible action \
+(e.g. rm -rf, mkfs, dd onto a disk, DROP DATABASE), still produce it when it \
+is clearly what the user asked for, but prepend a single comment line warning \
+about it.
+"""
+
+_AI_LANG_NOTE = {
+    "en": "Write any comments in English.",
+    "pt": "Escreva os comentários em português.",
+}
+
+
+def ai_system_prompt(lang: str) -> str:
+    note = _AI_LANG_NOTE.get(lang, _AI_LANG_NOTE["en"])
+    return f"{_AI_SYSTEM_BASE}\n{note}"

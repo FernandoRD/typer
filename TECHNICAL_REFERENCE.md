@@ -2,7 +2,7 @@
 
 ## Visão Geral
 
-AutoTyper simula pressionamentos de tecla em qualquer janela ativa do SO, digitando texto caractere por caractere com intervalo configurável. Suporta marcadores embutidos no texto (`[[pause:N]]`, `[[speed:N]]`, `[[key:F5]]`) e modo por linha para scripts interativos.
+AutoTyper simula pressionamentos de tecla em qualquer janela ativa do SO, digitando texto caractere por caractere com intervalo configurável. Suporta marcadores embutidos no texto (`[[pause:N]]`, `[[speed:N]]`, `[[key:F5]]`) e modo por linha para scripts interativos. Um assistente de IA opcional (Anthropic Claude) gera o texto a digitar a partir de um prompt em linguagem natural.
 
 ---
 
@@ -13,9 +13,10 @@ typer.py               — shim de compatibilidade: importa e executa autotyper.
 autotyper/
 ├── __init__.py        — docstring do pacote, sem exports
 ├── __main__.py        — entry point: parse_args() → run_headless() ou TyperApp.mainloop()
-├── config.py          — TRANSLATIONS, SPEED_PROFILES, StatusStyle, platform_mono_font()
+├── config.py          — TRANSLATIONS, SPEED_PROFILES, StatusStyle, platform_mono_font(), AI_MODELS, ai_system_prompt()
 ├── markers.py         — Instruction, parse_instructions(), _MARKER_RE, _SPECIAL_KEYS
 ├── engine.py          — TypingEngine, TypingCallbacks (sem dependência de tkinter)
+├── ai.py              — AIGenerator, AICallbacks, build_client(), has_credentials() (sem dependência de tkinter)
 ├── app.py             — TyperApp (GUI, tkinter/ttkbootstrap)
 └── cli.py             — parse_args(), run_headless()
 ```
@@ -32,6 +33,40 @@ autotyper/
 | `SPEED_PROFILES` | `list[tuple[int \| None, str]]` | Pares `(ms, chave_tradução)` para o combo de perfil |
 | `StatusStyle` | `enum.StrEnum` | Constantes de estilo ttkbootstrap: `IDLE`, `SUCCESS`, `WARNING`, `ERROR` |
 | `platform_mono_font(size)` | `func → tuple[str, int]` | Fonte monoespaçada por plataforma (Consolas / Menlo / Monospace) |
+| `AI_MODEL` | `str` | Modelo padrão do assistente (`"claude-opus-4-8"`) |
+| `AI_MODELS` | `list[tuple[str, str]]` | Modelos selecionáveis: `(id, nome_exibido)` — Opus 4.8, Sonnet 5, Haiku 4.5 |
+| `_AI_ADAPTIVE_MODELS` | `set[str]` | Modelos que aceitam `thinking={"type": "adaptive"}` (Haiku 4.5 **não**) |
+| `model_supports_adaptive(id)` | `func → bool` | True se o modelo aceita adaptive thinking |
+| `ai_system_prompt(lang)` | `func → str` | System prompt do assistente, com nota de idioma para os comentários |
+
+---
+
+### `autotyper/ai.py`
+
+Sem dependência de tkinter — espelha `engine.py`. Roda a chamada à API numa daemon thread e reporta via `AICallbacks`.
+
+| Símbolo | Tipo | Descrição |
+| --- | --- | --- |
+| `is_available()` | `func → bool` | True se o pacote `anthropic` está instalado |
+| `has_credentials()` | `func → bool` | True se há credencial (env, perfil `ant`, ou login do Claude Code) |
+| `is_auth_error(e)` | `func → bool` | True se a exceção é `anthropic.AuthenticationError` |
+| `build_client()` | `func → anthropic.Anthropic` | Resolve credenciais (ver *Resolução de Credenciais*) |
+| `AICallbacks` | `dataclass` | `on_start`, `on_text(chunk)`, `on_done(full)`, `on_error(e)` — chamados da thread worker |
+| `AIGenerator` | `class` | `generate(prompt, lang, model, callbacks)` inicia o streaming em daemon thread; `is_generating: bool` |
+
+#### Resolução de Credenciais (`build_client()`)
+
+Ordem de precedência, **sem armazenar nada localmente**:
+
+1. Env `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` → SDK resolve (`anthropic.Anthropic()`)
+2. Perfil `ant auth login` em `~/.config/anthropic/` → SDK resolve
+3. Login do Claude Code / VS Code em `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` usado como token OAuth Bearer com header `anthropic-beta: oauth-2025-04-20`
+
+O token do item 3 é lido **a cada geração** (o Claude Code o renova no arquivo, então re-ler pega o token atualizado). Usa a cota da assinatura Claude, compartilhada com o Claude Code — `429` sob uso concorrente pesado.
+
+#### Thinking condicional
+
+`_run()` só inclui `thinking={"type": "adaptive"}` quando `model_supports_adaptive(model)` é True. Haiku 4.5 rejeita adaptive thinking com HTTP 400, por isso o gating.
 
 ---
 
@@ -94,6 +129,9 @@ Dataclass com todos os callbacks opcionais. Todos são chamados da **thread work
 | --- | --- | --- |
 | `__init__(lang, initial_file, interval_ms, wait_s)` | Principal | Constrói a janela; `interval_ms` é em ms (convertido internamente) |
 | `start_typing_thread()` | Principal | Lê widgets, constrói `TypingCallbacks`, chama `engine.start()` |
+| `generate_with_ai()` | Principal | Lê prompt e modelo, valida credenciais, constrói `AICallbacks` e chama `AIGenerator.generate()` |
+| `_ai_on_start/_text/_done/_error` | Principal (via after) | Handlers de streaming: limpa editor no 1º chunk, insere texto, reabilita controles, mapeia erro de auth |
+| `_selected_model()` | Principal | Retorna o `id` do modelo escolhido no combobox |
 | `request_stop()` | Qualquer | Para o engine; seguro chamar de qualquer thread |
 | `_toggle_pause()` | Principal | Delega ao engine e atualiza botão |
 | `_on_chunk_done(cur, total)` | Principal (via after) | Atualiza log, status e barra de progresso após cada linha |

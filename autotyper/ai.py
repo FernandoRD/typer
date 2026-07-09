@@ -12,13 +12,17 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .config import ai_system_prompt, model_supports_adaptive
+from .config import ai_system_prompt, ModelInfo
 
 try:
     import anthropic
     _ANTHROPIC_AVAILABLE = True
 except ImportError:
     _ANTHROPIC_AVAILABLE = False
+
+# Effort levels ever exposed by the API, in low-to-high order. Per-model
+# support is read from that model's `capabilities.effort` at fetch time.
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 # Claude Code / VS Code plugin store their browser-login OAuth token here.
@@ -82,6 +86,35 @@ def build_client() -> "anthropic.Anthropic":
     return anthropic.Anthropic()              # nothing configured → raises on use
 
 
+def list_models() -> list[ModelInfo]:
+    """Fetch every model visible to the account from the live Models API.
+
+    Unfiltered — whatever `client.models.list()` returns is what the menu
+    shows, so a new model or a new version of an existing one appears with no
+    code change. Adaptive-thinking and effort support are read from each
+    model's `capabilities`, not guessed from the model id. Raises on network/
+    auth/API errors; the caller decides whether to fall back to a static list.
+    """
+    client = build_client()
+    infos = []
+    for m in client.models.list():
+        caps = getattr(m, "capabilities", None) or {}
+        thinking = caps.get("thinking") or {}
+        adaptive = bool((thinking.get("types") or {}).get("adaptive", {}).get("supported"))
+        effort_caps = caps.get("effort") or {}
+        levels = tuple(
+            level for level in _EFFORT_LEVELS
+            if (effort_caps.get(level) or {}).get("supported")
+        ) if effort_caps.get("supported") else ()
+        infos.append(ModelInfo(
+            id=m.id,
+            display_name=getattr(m, "display_name", None) or m.id,
+            supports_adaptive=adaptive,
+            effort_levels=levels,
+        ))
+    return infos
+
+
 @dataclass
 class AICallbacks:
     on_start: Callable[[], None] | None = None       # generation began
@@ -101,17 +134,22 @@ class AIGenerator:
         return self._active
 
     def generate(self, prompt: str, lang: str, model: str,
-                 callbacks: AICallbacks) -> None:
-        """Start streaming a completion. Guards (lib/creds) are the caller's job."""
+                 callbacks: AICallbacks, supports_adaptive: bool = False,
+                 effort: str | None = None) -> None:
+        """Start streaming a completion. Guards (lib/creds) are the caller's job.
+
+        `supports_adaptive` and `effort` come from that model's fetched
+        ModelInfo (see list_models()) — the caller looks it up, not this class.
+        """
         self._active = True
         threading.Thread(
             target=self._run,
-            args=(prompt, lang, model, callbacks),
+            args=(prompt, lang, model, callbacks, supports_adaptive, effort),
             daemon=True,
         ).start()
 
-    def _run(self, prompt: str, lang: str, model: str,
-             callbacks: AICallbacks) -> None:
+    def _run(self, prompt: str, lang: str, model: str, callbacks: AICallbacks,
+              supports_adaptive: bool, effort: str | None) -> None:
         try:
             client = build_client()          # env key / ant profile / Claude Code login
             if callbacks.on_start:
@@ -123,8 +161,10 @@ class AIGenerator:
                 system=ai_system_prompt(lang),
                 messages=[{"role": "user", "content": prompt}],
             )
-            if model_supports_adaptive(model):   # Haiku 4.5 rejects adaptive thinking
+            if supports_adaptive:
                 kwargs["thinking"] = {"type": "adaptive"}
+            if effort:
+                kwargs["output_config"] = {"effort": effort}
 
             parts: list[str] = []
             with client.messages.stream(**kwargs) as stream:

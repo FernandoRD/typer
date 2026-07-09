@@ -12,6 +12,7 @@ AutoTyper é uma ferramenta de desktop desenvolvida em Python que simula digita�
 | **Assistente IA** | Descreva em linguagem natural e a IA (Claude) gera o texto/comandos a digitar, opcionalmente com marcadores de automação |
 | **Seletor de modelo** | Escolha entre Opus 4.8, Sonnet 5 ou Haiku 4.5 |
 | **Login por browser** | Reaproveita o login OAuth do Claude Code / plugin do VS Code — sem exportar chave de API |
+| **Cofre Bitwarden** | Busca credenciais no seu cofre Bitwarden (via `bw` CLI) e digita a senha direto na janela em foco — sem exibir nem salvar o segredo |
 | Velocidade configurável | Ajuste o intervalo entre teclas em milissegundos |
 | Marcadores embutidos | `[[pause:N]]`, `[[speed:N]]`, `[[key:ctrl+c]]` controlam o comportamento mid-texto |
 | Menu de inserção | Dropdown para inserir marcadores de timing, teclas de função, modificadores e combinações |
@@ -32,6 +33,7 @@ AutoTyper é uma ferramenta de desktop desenvolvida em Python que simula digita�
 - [`ttkbootstrap`](https://ttkbootstrap.readthedocs.io/) >= 1.20.0
 - [`pynput`](https://pynput.readthedocs.io/) >= 1.7.0
 - [`anthropic`](https://github.com/anthropics/anthropic-sdk-python) >= 0.40.0 *(opcional — só para o Assistente IA)*
+- [**Bitwarden CLI (`bw`)**](https://bitwarden.com/help/cli/) *(opcional — só para o Cofre Bitwarden; instalação externa, ver abaixo)*
 
 ---
 
@@ -97,6 +99,48 @@ Se você já usa o Claude Code, o item 3 funciona automaticamente — nenhum pas
 
 > Sem o pacote `anthropic` ou sem credencial, o painel continua visível e apenas a geração exibe um erro claro — o restante do app não é afetado.
 
+### 🔐 Cofre Bitwarden
+
+No painel **🔐 Bitwarden** você desbloqueia seu cofre, busca uma credencial e manda o app **digitar a senha diretamente na janela em foco** — ideal para consoles remotos (iDRAC, iLO, KVM over IP) onde não há copiar-colar.
+
+**Segurança:** a senha buscada **nunca aparece no editor nem no log**; a senha mestra e o token de sessão trafegam para o `bw` por variável de ambiente (não ficam visíveis na lista de processos); nada é gravado em disco; o cofre é bloqueado ao fechar a janela.
+
+**Fluxo:** Desbloquear (senha mestra) → Buscar (ex.: *iDRAC*) → selecionar → focar a janela de destino → **⌨ Digitar senha** (respeita o *tempo de espera* e o *intervalo* configurados).
+
+#### Dependência: Bitwarden CLI (`bw`)
+
+O recurso usa o cliente oficial de linha de comando da Bitwarden. **Instale-o separadamente** (não é um pacote pip):
+
+```bash
+# Windows
+winget install Bitwarden.CLI
+# ou, em qualquer plataforma com Node.js:
+npm install -g @bitwarden/cli
+# macOS (Homebrew)
+brew install bitwarden-cli
+# Linux (Snap)
+sudo snap install bw
+```
+
+> ⚠️ **Faça `bw login` no terminal antes de abrir o painel.** O AutoTyper **só desbloqueia** o cofre (`bw unlock`) — ele **nunca** faz login, porque isso exigiria lidar com sua senha mestra, 2FA e verificação de dispositivo. Se você tentar desbloquear sem ter feito login, o app mostra a mensagem *"você não está logado no Bitwarden. Rode 'bw login'…"*.
+
+Faça login **uma vez** pelo terminal (e-mail + senha + 2FA). Na primeira vez, o Bitwarden pode exigir uma verificação de dispositivo — ele envia um **OTP para o seu e-mail** que você digita no terminal:
+
+```bash
+# Servidor próprio (self-hosted / Vaultwarden): configure o servidor ANTES do login
+bw config server https://seu-servidor
+
+bw login
+# ? Email address: voce@exemplo.com
+# ? Master password: [hidden]
+# ? New device verification required. Enter OTP sent to login email: 123456
+# You are logged in!
+```
+
+O login persiste entre sessões — você não precisa repeti-lo a cada vez, só o desbloqueio (com a senha mestra) dentro do app. Para sair de vez: `bw logout`.
+
+> Sem o `bw` no PATH (ou sem `bw login` feito), o painel continua visível e apenas as ações do Bitwarden exibem um erro claro — o restante do app não é afetado.
+
 ### Modo headless (sem GUI)
 
 ```bash
@@ -124,6 +168,7 @@ autotyper/
 ├── markers.py         — parsing de marcadores embutidos
 ├── engine.py          — TypingEngine + TypingCallbacks (sem dependência de Tkinter)
 ├── ai.py              — AIGenerator + resolução de credenciais (sem dependência de Tkinter)
+├── vault.py           — BitwardenVault (integração com o `bw` CLI, sem dependência de Tkinter)
 ├── app.py             — TyperApp (GUI, Tkinter/ttkbootstrap)
 └── cli.py             — parse_args() + run_headless()
 requirements.txt

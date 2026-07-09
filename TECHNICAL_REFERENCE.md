@@ -13,7 +13,7 @@ typer.py               — shim de compatibilidade: importa e executa autotyper.
 autotyper/
 ├── __init__.py        — docstring do pacote, sem exports
 ├── __main__.py        — entry point: parse_args() → run_headless() ou TyperApp.mainloop()
-├── config.py          — TRANSLATIONS, SPEED_PROFILES, StatusStyle, platform_mono_font(), AI_MODELS, ai_system_prompt()
+├── config.py          — TRANSLATIONS, SPEED_PROFILES, StatusStyle, platform_mono_font(), ModelInfo, AI_FALLBACK_MODELS, ai_system_prompt()
 ├── markers.py         — Instruction, parse_instructions(), _MARKER_RE, _SPECIAL_KEYS
 ├── engine.py          — TypingEngine, TypingCallbacks (sem dependência de tkinter)
 ├── ai.py              — AIGenerator, AICallbacks, build_client(), has_credentials() (sem dependência de tkinter)
@@ -33,10 +33,9 @@ autotyper/
 | `SPEED_PROFILES` | `list[tuple[int \| None, str]]` | Pares `(ms, chave_tradução)` para o combo de perfil |
 | `StatusStyle` | `enum.StrEnum` | Constantes de estilo ttkbootstrap: `IDLE`, `SUCCESS`, `WARNING`, `ERROR` |
 | `platform_mono_font(size)` | `func → tuple[str, int]` | Fonte monoespaçada por plataforma (Consolas / Menlo / Monospace) |
-| `AI_MODEL` | `str` | Modelo padrão do assistente (`"claude-opus-4-8"`) |
-| `AI_MODELS` | `list[tuple[str, str]]` | Modelos selecionáveis: `(id, nome_exibido)` — Opus 4.8, Sonnet 5, Haiku 4.5 |
-| `_AI_ADAPTIVE_MODELS` | `set[str]` | Modelos que aceitam `thinking={"type": "adaptive"}` (Haiku 4.5 **não**) |
-| `model_supports_adaptive(id)` | `func → bool` | True se o modelo aceita adaptive thinking |
+| `AI_MODEL` | `str` | Id de modelo usado como último recurso (`"claude-opus-4-8"`) |
+| `ModelInfo` | `dataclass` | `id`, `display_name`, `supports_adaptive: bool`, `effort_levels: tuple[str, ...]` |
+| `AI_FALLBACK_MODELS` | `list[ModelInfo]` | Lista estática usada só quando a Models API não pode ser consultada (sem `anthropic`, sem credencial, ou erro de rede) |
 | `ai_system_prompt(lang)` | `func → str` | System prompt do assistente, com nota de idioma para os comentários |
 
 ---
@@ -51,8 +50,9 @@ Sem dependência de tkinter — espelha `engine.py`. Roda a chamada à API numa 
 | `has_credentials()` | `func → bool` | True se há credencial (env, perfil `ant`, ou login do Claude Code) |
 | `is_auth_error(e)` | `func → bool` | True se a exceção é `anthropic.AuthenticationError` |
 | `build_client()` | `func → anthropic.Anthropic` | Resolve credenciais (ver *Resolução de Credenciais*) |
+| `list_models()` | `func → list[ModelInfo]` | Busca todos os modelos visíveis via `client.models.list()`, sem filtragem; lê `supports_adaptive`/`effort_levels` de `capabilities` |
 | `AICallbacks` | `dataclass` | `on_start`, `on_text(chunk)`, `on_done(full)`, `on_error(e)` — chamados da thread worker |
-| `AIGenerator` | `class` | `generate(prompt, lang, model, callbacks)` inicia o streaming em daemon thread; `is_generating: bool` |
+| `AIGenerator` | `class` | `generate(prompt, lang, model, callbacks, supports_adaptive, effort)` inicia o streaming em daemon thread; `is_generating: bool` |
 
 #### Resolução de Credenciais (`build_client()`)
 
@@ -64,9 +64,13 @@ Ordem de precedência, **sem armazenar nada localmente**:
 
 O token do item 3 é lido **a cada geração** (o Claude Code o renova no arquivo, então re-ler pega o token atualizado). Usa a cota da assinatura Claude, compartilhada com o Claude Code — `429` sob uso concorrente pesado.
 
-#### Thinking condicional
+#### Thinking condicional e nível de effort
 
-`_run()` só inclui `thinking={"type": "adaptive"}` quando `model_supports_adaptive(model)` é True. Haiku 4.5 rejeita adaptive thinking com HTTP 400, por isso o gating.
+`_run()` só inclui `thinking={"type": "adaptive"}` quando `supports_adaptive=True` é passado pelo chamador, e só inclui `output_config={"effort": ...}` quando um `effort` é passado. Esses dois valores vêm do `ModelInfo` do modelo selecionado (capacidades lidas dinamicamente via `list_models()`, não mais de um set fixo no código) — assim um modelo que não aceita adaptive thinking ou o parâmetro `effort` (ex.: Haiku 4.5, que rejeita ambos com HTTP 400) simplesmente não os recebe.
+
+#### Lista de modelos dinâmica
+
+`TyperApp` inicia com `AI_FALLBACK_MODELS` no combobox e, no fim do `__init__`, dispara `_refresh_ai_models_async()` numa thread daemon chamando `ai.list_models()`. Se a chamada tiver sucesso, `_apply_fetched_models()` substitui a lista (via `self.after(0, ...)`) sem filtrar nada — qualquer modelo novo ou mudança de versão aparece no próximo start sem alterar código. Falha de rede/credencial/lib mantém a lista estática em silêncio. O combobox de effort (`_ai_effort_combo`) é recalculado a cada troca de modelo (`_update_effort_options()`), mostrando só os níveis que aquele modelo suporta; fica desabilitado quando o modelo não suporta `effort`.
 
 ---
 
@@ -129,9 +133,12 @@ Dataclass com todos os callbacks opcionais. Todos são chamados da **thread work
 | --- | --- | --- |
 | `__init__(lang, initial_file, interval_ms, wait_s)` | Principal | Constrói a janela; `interval_ms` é em ms (convertido internamente) |
 | `start_typing_thread()` | Principal | Lê widgets, constrói `TypingCallbacks`, chama `engine.start()` |
-| `generate_with_ai()` | Principal | Lê prompt e modelo, valida credenciais, constrói `AICallbacks` e chama `AIGenerator.generate()` |
+| `generate_with_ai()` | Principal | Lê prompt, modelo e effort; valida credenciais, constrói `AICallbacks` e chama `AIGenerator.generate()` |
 | `_ai_on_start/_text/_done/_error` | Principal (via after) | Handlers de streaming: limpa editor no 1º chunk, insere texto, reabilita controles, mapeia erro de auth |
-| `_selected_model()` | Principal | Retorna o `id` do modelo escolhido no combobox |
+| `_selected_model_info()` | Principal | Retorna o `ModelInfo` escolhido no combobox (fallback: primeiro da lista) |
+| `_selected_model()` | Principal | Retorna o `id` do modelo escolhido |
+| `_selected_effort()` | Principal | Retorna o nível de effort escolhido, ou `None` se o modelo não suporta |
+| `_refresh_ai_models_async()` | Principal (dispara thread) | Busca `ai.list_models()` em background e aplica o resultado via `after(0, ...)` |
 | `request_stop()` | Qualquer | Para o engine; seguro chamar de qualquer thread |
 | `_toggle_pause()` | Principal | Delega ao engine e atualiza botão |
 | `_on_chunk_done(cur, total)` | Principal (via after) | Atualiza log, status e barra de progresso após cada linha |

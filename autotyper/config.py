@@ -2,6 +2,7 @@
 
 import enum
 import platform
+from dataclasses import dataclass
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "en": {
@@ -72,6 +73,30 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "ai_err_auth":      "Error: not authenticated. Log in with your Claude Code / VS Code browser session, run 'ant auth login', or set ANTHROPIC_API_KEY.",
         "ai_err_lib":       "Error: the 'anthropic' package is not installed (pip install anthropic).",
         "ai_err_api":       "AI error: {e}",
+        # Bitwarden vault
+        "bw_title":         " 🔐 Bitwarden ",
+        "bw_pw_label":      "Master password:",
+        "bw_unlock_btn":    "🔓 Unlock",
+        "bw_lock_btn":      "🔒 Lock",
+        "bw_search_label":  "Search credential:",
+        "bw_search_btn":    "🔍 Search",
+        "bw_type_btn":      "⌨ Type password",
+        "bw_hint":          "Unlock, search an item, then type its password into the focused window. Nothing is shown or saved.",
+        "bw_unlocking":     "Unlocking vault…",
+        "bw_unlocked":      "Vault unlocked.",
+        "bw_locked":        "Vault locked.",
+        "bw_searching":     "Searching…",
+        "bw_found":         "{n} credential(s) found.",
+        "bw_none":          "No credentials matched.",
+        "bw_fetching":      "Fetching password…",
+        "bw_typing_pw":     "Typing password into the focused window…",
+        "bw_err_lib":       "Error: Bitwarden CLI ('bw') not found on PATH. Install it and run 'bw login' first.",
+        "bw_err_locked":    "Error: unlock the vault first.",
+        "bw_err_empty_pw":  "Error: enter your master password.",
+        "bw_err_empty_q":   "Error: type something to search for.",
+        "bw_err_no_sel":    "Error: select a credential first.",
+        "bw_err_login":     "Error: not logged in to Bitwarden. Run 'bw login' in a terminal first, then unlock here.",
+        "bw_err_api":       "Bitwarden error: {e}",
     },
     "pt": {
         # Cabeçalho
@@ -141,6 +166,30 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "ai_err_auth":      "Erro: não autenticado. Faça login pelo browser (Claude Code / VS Code), rode 'ant auth login' ou defina ANTHROPIC_API_KEY.",
         "ai_err_lib":       "Erro: o pacote 'anthropic' não está instalado (pip install anthropic).",
         "ai_err_api":       "Erro da IA: {e}",
+        # Cofre Bitwarden
+        "bw_title":         " 🔐 Bitwarden ",
+        "bw_pw_label":      "Senha mestra:",
+        "bw_unlock_btn":    "🔓 Desbloquear",
+        "bw_lock_btn":      "🔒 Bloquear",
+        "bw_search_label":  "Buscar credencial:",
+        "bw_search_btn":    "🔍 Buscar",
+        "bw_type_btn":      "⌨ Digitar senha",
+        "bw_hint":          "Desbloqueie, busque um item e digite a senha na janela em foco. Nada é exibido nem salvo.",
+        "bw_unlocking":     "Desbloqueando cofre…",
+        "bw_unlocked":      "Cofre desbloqueado.",
+        "bw_locked":        "Cofre bloqueado.",
+        "bw_searching":     "Buscando…",
+        "bw_found":         "{n} credencial(is) encontrada(s).",
+        "bw_none":          "Nenhuma credencial encontrada.",
+        "bw_fetching":      "Obtendo senha…",
+        "bw_typing_pw":     "Digitando a senha na janela em foco…",
+        "bw_err_lib":       "Erro: CLI do Bitwarden ('bw') não encontrada no PATH. Instale-a e rode 'bw login' antes.",
+        "bw_err_locked":    "Erro: desbloqueie o cofre primeiro.",
+        "bw_err_empty_pw":  "Erro: informe a senha mestra.",
+        "bw_err_empty_q":   "Erro: digite algo para buscar.",
+        "bw_err_no_sel":    "Erro: selecione uma credencial primeiro.",
+        "bw_err_login":     "Erro: você não está logado no Bitwarden. Rode 'bw login' num terminal antes e então desbloqueie aqui.",
+        "bw_err_api":       "Erro do Bitwarden: {e}",
     },
 }
 
@@ -169,21 +218,27 @@ def platform_mono_font(size: int = 13) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 # AI assistant (Anthropic Claude)
 # ---------------------------------------------------------------------------
-AI_MODEL = "claude-opus-4-8"   # default selection
+AI_MODEL = "claude-opus-4-8"   # default selection, used as a last-resort id
 
-# Selectable models, in menu order: (model_id, display name).
-AI_MODELS: list[tuple[str, str]] = [
-    ("claude-opus-4-8",  "Opus 4.8"),
-    ("claude-sonnet-5",  "Sonnet 5"),
-    ("claude-haiku-4-5", "Haiku 4.5"),
+
+@dataclass(frozen=True)
+class ModelInfo:
+    id: str
+    display_name: str
+    supports_adaptive: bool          # accepts thinking={"type": "adaptive"}
+    effort_levels: tuple[str, ...]   # supported output_config.effort values
+
+
+# Used only when the live Models API can't be reached — no `anthropic` package,
+# no credentials, or a network/API error. ai.list_models() fetches the real,
+# current list (with real capabilities) at runtime, so this fallback is never
+# the source of truth and shouldn't need editing when a new model ships.
+AI_FALLBACK_MODELS: list[ModelInfo] = [
+    ModelInfo("claude-fable-5",   "Fable 5",   True,  ("low", "medium", "high", "xhigh", "max")),
+    ModelInfo("claude-opus-4-8",  "Opus 4.8",  True,  ("low", "medium", "high", "xhigh", "max")),
+    ModelInfo("claude-sonnet-5",  "Sonnet 5",  True,  ("low", "medium", "high", "xhigh", "max")),
+    ModelInfo("claude-haiku-4-5", "Haiku 4.5", False, ()),
 ]
-
-# Models that accept thinking={"type": "adaptive"} (Haiku 4.5 does not).
-_AI_ADAPTIVE_MODELS = {"claude-opus-4-8", "claude-sonnet-5"}
-
-
-def model_supports_adaptive(model_id: str) -> bool:
-    return model_id in _AI_ADAPTIVE_MODELS
 
 # System prompt shared by both languages, with a per-language instruction on
 # what language to write comments in. Output goes straight into the typing

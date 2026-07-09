@@ -18,6 +18,43 @@ from . import vault
 from .vault import BitwardenVault, VaultCallbacks, VaultItem
 
 
+class CollapsibleFrame(ttk.Frame):
+    """A section with a clickable header that shows/hides its body.
+
+    Children go into ``self.body`` (a plain frame). Use ``set_title()`` to
+    update the header text (for i18n). Starts collapsed unless ``expanded``.
+    """
+
+    def __init__(self, master, text: str = "", bootstyle: str = "secondary",
+                 expanded: bool = False) -> None:
+        super().__init__(master)
+        self._text = text
+        self._expanded = expanded
+        self._header = ttk.Button(self, command=self.toggle,
+                                  bootstyle=f"{bootstyle}-link", padding=(4, 3))
+        self._header.pack(fill="x")
+        self.body = ttk.Frame(self)
+        self._render_header()
+        if expanded:
+            self.body.pack(fill="both", expand=True)
+
+    def _render_header(self) -> None:
+        arrow = "▾" if self._expanded else "▸"
+        self._header.configure(text=f"{arrow}  {self._text}")
+
+    def set_title(self, text: str) -> None:
+        self._text = text
+        self._render_header()
+
+    def toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._render_header()
+        if self._expanded:
+            self.body.pack(fill="both", expand=True)
+        else:
+            self.body.pack_forget()
+
+
 class TyperApp(ttk.Window):
 
     def __init__(self, lang: str = "en", initial_file: str | None = None,
@@ -33,8 +70,8 @@ class TyperApp(ttk.Window):
         # live list from the Models API (see ai.list_models()).
         self._ai_models: list[ModelInfo] = list(AI_FALLBACK_MODELS)
 
-        self.geometry("820x860")
-        self.minsize(width=410, height=500)
+        self.geometry("820x660")
+        self.minsize(width=410, height=460)
         self.title("AutoTyper")
 
         self._build_header()
@@ -42,11 +79,15 @@ class TyperApp(ttk.Window):
         self._check_wayland()
         self._build_ai_panel()
         self._build_bw_panel()
-        self._build_text_area()
-        self._build_char_counter()
-        self._build_progress()
-        self._build_log()
+        # Bottom cluster — docked to the bottom and packed BEFORE the expanding
+        # text area, so they keep a fixed height and are never clipped when the
+        # window is resized smaller. The text area is the sole widget that
+        # absorbs resizing (status is packed first, so it's the last to yield).
         self._build_status_bar()
+        self._build_log()
+        self._build_progress()
+        self._build_char_counter()
+        self._build_text_area()
 
         self._update_char_count()
         self._refresh_ai_models_async()
@@ -76,12 +117,12 @@ class TyperApp(ttk.Window):
         hf.pack(side="top", fill="x")
 
         self._lbl_title = ttk.Label(hf, text=self.t("app_title"),
-                                    font=("", 22, "bold"), bootstyle="light")
-        self._lbl_title.pack(side="left", padx=20, pady=10)
+                                    font=("", 18, "bold"), bootstyle="light")
+        self._lbl_title.pack(side="left", padx=20, pady=6)
 
         # Language selector (far right)
         lang_frame = ttk.Frame(hf, bootstyle="dark")
-        lang_frame.pack(side="right", padx=(5, 20), pady=10)
+        lang_frame.pack(side="right", padx=(5, 20), pady=6)
         self._lbl_lang = ttk.Label(lang_frame, text=self.t("lang_label"), bootstyle="light")
         self._lbl_lang.pack(side="left", padx=(0, 5))
         self._lang_display = ttk.StringVar(value="English" if self.lang == "en" else "Português")
@@ -93,15 +134,15 @@ class TyperApp(ttk.Window):
 
         self._btn_save = ttk.Button(hf, text=self.t("save_file"), width=16,
                                     command=self.save_file, bootstyle="secondary-outline")
-        self._btn_save.pack(side="right", padx=(5, 5), pady=10)
+        self._btn_save.pack(side="right", padx=(5, 5), pady=6)
 
         self._btn_open = ttk.Button(hf, text=self.t("open_file"), width=16,
                                     command=self.open_file, bootstyle="secondary-outline")
-        self._btn_open.pack(side="right", padx=5, pady=10)
+        self._btn_open.pack(side="right", padx=5, pady=6)
 
     def _build_settings(self, interval_ms: int, wait_s: float) -> None:
         sf = ttk.Labelframe(self, text=self.t("config_title"), bootstyle="info")
-        sf.pack(side="top", fill="x", padx=20, pady=(20, 10))
+        sf.pack(side="top", fill="x", padx=20, pady=(8, 6))
         sf.columnconfigure((0, 1, 2, 3), weight=1)
         self._sf = sf
 
@@ -155,10 +196,12 @@ class TyperApp(ttk.Window):
         self._btn_pause.pack(side="top")
 
     def _build_ai_panel(self) -> None:
-        af = ttk.Labelframe(self, text=self.t("ai_title"), bootstyle="primary")
-        af.pack(side="top", fill="x", padx=20, pady=(0, 8))
+        section = CollapsibleFrame(self, text=self.t("ai_title"),
+                                   bootstyle="primary", expanded=False)
+        section.pack(side="top", fill="x", padx=20, pady=(0, 4))
+        self._af = section
+        af = section.body
         af.columnconfigure(0, weight=1)
-        self._af = af
 
         self._lbl_ai = ttk.Label(af, text=self.t("ai_prompt_label"))
         self._lbl_ai.grid(row=0, column=0, columnspan=4,
@@ -194,10 +237,12 @@ class TyperApp(ttk.Window):
                                padx=15, pady=(0, 8), sticky="w")
 
     def _build_bw_panel(self) -> None:
-        bf = ttk.Labelframe(self, text=self.t("bw_title"), bootstyle="warning")
-        bf.pack(side="top", fill="x", padx=20, pady=(0, 8))
+        section = CollapsibleFrame(self, text=self.t("bw_title"),
+                                   bootstyle="warning", expanded=False)
+        section.pack(side="top", fill="x", padx=20, pady=(0, 4))
+        self._bf = section
+        bf = section.body
         bf.columnconfigure(1, weight=1)
-        self._bf = bf
 
         # Row 0 ── Master password | Unlock | Lock
         self._lbl_bw_pw = ttk.Label(bf, text=self.t("bw_pw_label"))
@@ -475,7 +520,7 @@ class TyperApp(ttk.Window):
 
     def _build_char_counter(self) -> None:
         row = ttk.Frame(self)
-        row.pack(side="top", fill="x", padx=22, pady=(2, 0))
+        row.pack(side="bottom", fill="x", padx=22, pady=(2, 0))
         self._insert_btn = ttk.Button(row, text=self.t("insert_btn"), width=22,
                                       bootstyle="info-outline",
                                       command=self._show_insert_menu)
@@ -526,22 +571,58 @@ class TyperApp(ttk.Window):
 
         # ── Key Combos ───────────────────────────────────────────────────────
         combo = Menu(m, tearoff=0)
-        for key, lbl in [
-            ("ctrl+c",       "Ctrl+C"),
-            ("ctrl+v",       "Ctrl+V"),
-            ("ctrl+x",       "Ctrl+X"),
-            ("ctrl+z",       "Ctrl+Z"),
-            ("ctrl+y",       "Ctrl+Y"),
-            ("ctrl+a",       "Ctrl+A"),
-            ("ctrl+s",       "Ctrl+S"),
-            ("ctrl+alt+del", "Ctrl+Alt+Del"),
-            ("alt+f4",       "Alt+F4"),
-            ("alt+tab",      "Alt+Tab"),
-            ("shift+tab",    "Shift+Tab"),
-            ("ctrl+shift+esc", "Ctrl+Shift+Esc"),
-        ]:
-            combo.add_command(label=lbl,
-                              command=lambda k=key: self._insert_marker(f"[[key:{k}]]"))
+
+        def add_combos(menu, entries):
+            for key, lbl in entries:
+                menu.add_command(
+                    label=lbl,
+                    command=lambda k=key: self._insert_marker(f"[[key:{k}]]"))
+
+        # Clipboard / editing
+        add_combos(combo, [
+            ("ctrl+c", "Ctrl+C  (copy / SIGINT)"),
+            ("ctrl+v", "Ctrl+V  (paste)"),
+            ("ctrl+x", "Ctrl+X  (cut)"),
+            ("ctrl+z", "Ctrl+Z  (undo)"),
+            ("ctrl+y", "Ctrl+Y  (redo)"),
+            ("ctrl+a", "Ctrl+A  (select all)"),
+            ("ctrl+s", "Ctrl+S  (save)"),
+            ("ctrl+f", "Ctrl+F  (find)"),
+            ("ctrl+w", "Ctrl+W  (close)"),
+        ])
+        combo.add_separator()
+        # Terminal / shell (Linux)
+        add_combos(combo, [
+            ("ctrl+shift+c", "Ctrl+Shift+C  (copy)"),
+            ("ctrl+shift+v", "Ctrl+Shift+V  (paste)"),
+            ("ctrl+l",       "Ctrl+L  (clear)"),
+            ("ctrl+r",       "Ctrl+R  (reverse search)"),
+            ("ctrl+d",       "Ctrl+D  (EOF / logout)"),
+            ("ctrl+alt+t",   "Ctrl+Alt+T  (open terminal)"),
+        ])
+        combo.add_separator()
+        # Window / system
+        add_combos(combo, [
+            ("ctrl+alt+del",   "Ctrl+Alt+Del"),
+            ("alt+f4",         "Alt+F4  (close window)"),
+            ("alt+tab",        "Alt+Tab  (switch window)"),
+            ("shift+tab",      "Shift+Tab"),
+            ("ctrl+shift+esc", "Ctrl+Shift+Esc  (task manager)"),
+        ])
+        combo.add_separator()
+        # Windows key
+        add_combos(combo, [
+            ("win+r", "Win+R  (run)"),
+            ("win+e", "Win+E  (explorer)"),
+            ("win+d", "Win+D  (show desktop)"),
+            ("win+l", "Win+L  (lock)"),
+        ])
+        combo.add_separator()
+        # Switch virtual terminal (Linux console)
+        tty = Menu(combo, tearoff=0)
+        add_combos(tty, [(f"ctrl+alt+F{n}", f"Ctrl+Alt+F{n}") for n in range(1, 8)])
+        combo.add_cascade(label="Switch TTY (Linux)", menu=tty)
+
         m.add_cascade(label="🗜  Key Combos", menu=combo)
 
         # ── Navigation & Editing ─────────────────────────────────────────────
@@ -590,12 +671,13 @@ class TyperApp(ttk.Window):
         self._progress_var = ttk.DoubleVar(value=0.0)
         self._progress_bar = ttk.Progressbar(self, variable=self._progress_var,
                                              maximum=100, bootstyle="success-striped")
-        self._progress_bar.pack(side="top", fill="x", padx=20, pady=(4, 0))
+        self._progress_bar.pack(side="bottom", fill="x", padx=20, pady=(4, 0))
 
     def _build_log(self) -> None:
-        self._log_frame = ttk.Labelframe(self, text=self.t("log_title"), bootstyle="secondary")
-        self._log_frame.pack(side="top", fill="x", padx=20, pady=(6, 2))
-        self._log_text = ScrolledText(self._log_frame, height=4, width=100,
+        self._log_frame = CollapsibleFrame(self, text=self.t("log_title"),
+                                           bootstyle="secondary", expanded=False)
+        self._log_frame.pack(side="bottom", fill="x", padx=20, pady=(4, 2))
+        self._log_text = ScrolledText(self._log_frame.body, height=3, width=100,
                                       font=platform_mono_font(10))
         self._log_text.pack(fill="x", padx=5, pady=5)
         self._log_text.text.configure(state="disabled")
@@ -604,7 +686,7 @@ class TyperApp(ttk.Window):
         sb = ttk.Frame(self)
         sb.pack(side="bottom", fill="x", padx=20, pady=(0, 5))
         self._status_label = ttk.Label(sb, text=self.t("status_ready"),
-                                       font=("", 12, "italic"), bootstyle=StatusStyle.IDLE)
+                                       font=("", 10, "italic"), bootstyle=StatusStyle.IDLE)
         self._status_label.pack(side="left")
 
     # -----------------------------------------------------------------------
@@ -654,13 +736,13 @@ class TyperApp(ttk.Window):
         self._chk_chunk.configure(text=self.t("chunk_label"))
         self._insert_btn.configure(text=self.t("insert_btn"))
         self._lbl_marker_hint.configure(text=self.t("marker_hint"))
-        self._af.configure(text=self.t("ai_title"))
+        self._af.set_title(self.t("ai_title"))
         self._lbl_ai.configure(text=self.t("ai_prompt_label"))
         self._lbl_ai_hint.configure(text=self.t("ai_hint"))
         if not self._ai.is_generating:
             self._btn_ai.configure(text=self.t("ai_generate_btn"))
 
-        self._bf.configure(text=self.t("bw_title"))
+        self._bf.set_title(self.t("bw_title"))
         self._lbl_bw_pw.configure(text=self.t("bw_pw_label"))
         self._btn_bw_unlock.configure(text=self.t("bw_unlock_btn"))
         self._btn_bw_lock.configure(text=self.t("bw_lock_btn"))
@@ -668,7 +750,7 @@ class TyperApp(ttk.Window):
         self._btn_bw_search.configure(text=self.t("bw_search_btn"))
         self._btn_bw_type.configure(text=self.t("bw_type_btn"))
         self._lbl_bw_hint.configure(text=self.t("bw_hint"))
-        self._log_frame.configure(text=self.t("log_title"))
+        self._log_frame.set_title(self.t("log_title"))
         self._status_label.configure(text=self.t("status_ready"))
 
         self._profile_combo.configure(values=self._profile_names())

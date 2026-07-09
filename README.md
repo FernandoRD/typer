@@ -15,13 +15,13 @@ AutoTyper é uma ferramenta de desktop desenvolvida em Python que simula digita�
 | **Cofre Bitwarden** | Busca credenciais no seu cofre Bitwarden (via `bw` CLI) e digita a senha direto na janela em foco — sem exibir nem salvar o segredo |
 | Velocidade configurável | Ajuste o intervalo entre teclas em milissegundos |
 | Marcadores embutidos | `[[pause:N]]`, `[[speed:N]]`, `[[key:ctrl+c]]` controlam o comportamento mid-texto |
-| Menu de inserção | Dropdown para inserir marcadores de timing, teclas de função, modificadores e combinações |
+| Menu de inserção | Dropdown para inserir marcadores de timing, teclas de função, modificadores e combinações (agrupadas por uso: área de transferência, terminal, janela/sistema, tecla Windows e troca de TTY no Linux) |
 | Atraso inicial | Tempo de espera antes de começar, permitindo trocar para a janela de destino |
 | Modo por linha | Pausa após cada linha e aguarda ENTER para avançar (útil para scripts interativos) |
 | Pausa / Retomada | Botão PAUSE suspende e retoma sem perder o ponto atual |
 | Parada de emergência | Tecla `ESC` ou botão STOP interrompem em ≤ 50ms |
 | Gestão de arquivos | Abre e salva arquivos `.txt` |
-| Interface moderna | Tema escuro com `ttkbootstrap`; bilingue EN/PT com troca em tempo real |
+| Interface moderna | Tema escuro com `ttkbootstrap`; painéis recolhíveis (IA, Bitwarden, Log) para uma janela compacta; rodapé de altura fixa; bilingue EN/PT com troca em tempo real |
 | Multiplataforma | Windows, macOS e Linux (X11) |
 | Modo headless | Operação sem GUI via linha de comando |
 
@@ -76,9 +76,10 @@ Insira marcadores diretamente no texto para controlar o comportamento durante a 
 | `[[speed:reset]]` | Restaura o intervalo original |
 | `[[key:F5]]` | Pressiona a tecla F5 |
 | `[[key:ctrl+c]]` | Executa o atalho Ctrl+C |
+| `[[key:ctrl+alt+del]]` | Envia Ctrl+Alt+Del (útil em KVM/iDRAC/iLO) |
 | `[[key:enter]]` | Pressiona Enter |
 
-Use o botão **📥 Inserir Marcador ▾** para inserir qualquer marcador via menu.
+Uma combinação (`[[key:mod+mod+tecla]]`) pode misturar modificadores com qualquer tecla especial ou caractere simples. Nomes de teclas aceitam aliases comuns (`del`, `pgup`, `pgdn`, `return`, `escape`, `ins`). Use o botão **📥 Inserir Marcador ▾** para inserir qualquer marcador via menu.
 
 ### 🤖 Assistente IA
 

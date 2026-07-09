@@ -50,9 +50,15 @@ autotyper/
 ├── engine.py          — TypingEngine, TypingCallbacks (no tkinter dependency)
 ├── ai.py              — AIGenerator, AICallbacks, is_available(), has_credentials(), build_client(), list_models() (no tkinter dependency)
 ├── vault.py           — BitwardenVault, VaultCallbacks, VaultItem, is_available() — Bitwarden `bw` CLI wrapper (no tkinter dependency)
-├── app.py             — TyperApp(ttk.Window) — all widgets here
+├── app.py             — TyperApp(ttk.Window) + CollapsibleFrame — all widgets here
 └── cli.py             — parse_args(), run_headless()
 ```
+
+### UI layout
+
+`CollapsibleFrame` (a small `ttk.Frame` subclass in `app.py`) wraps the **AI**, **Bitwarden**, and **Log** panels; all three start **collapsed** to keep the window compact. Its clickable `-link` header toggles `self.body` (where children are built); use `set_title()` for i18n, not `.configure(text=...)` — so `_refresh_ui_text()` calls `self._af/_bf/_log_frame.set_title(...)`.
+
+**Packing order matters:** the footer cluster (status bar, log, progress bar, char counter) is packed `side="bottom"` in `__init__` *before* the text area — the only `expand=True` widget. So on shrink only the text area gives way; the footer keeps a fixed height and the status bar (packed first) is the last to be clipped, never hidden.
 
 ### AI assistant
 
@@ -102,6 +108,8 @@ Text can contain embedded markers that the engine interprets at runtime:
 | `[[key:name]]` | press a special key or chord (`ctrl+c`, `F5`, `win`, etc.) |
 
 `parse_instructions(text) → list[Instruction]` converts raw text into a flat instruction list. Markers with invalid or non-positive values are silently dropped.
+
+A `[[key:...]]` chord (`_press_special_key` in `engine.py`) mixes modifiers with any special key or single character; unresolved parts are dropped. `_SPECIAL_KEYS` therefore carries common aliases (`del`, `pgup`, `pgdn`, `return`, `escape`, `ins`) — without the `del` alias, `ctrl+alt+del` would drop the Del key.
 
 ### Engine API contract
 

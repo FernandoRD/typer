@@ -81,7 +81,7 @@ O token do item 3 é lido **a cada geração** (o Claude Code o renova no arquiv
 | `Instruction` | `TypeAlias` | `tuple[str, str \| float \| None]` — um item da lista de instruções |
 | `parse_instructions(text)` | `func → list[Instruction]` | Converte texto bruto em lista de instruções tipadas |
 | `_MARKER_RE` | `re.Pattern` | Regex que reconhece `[[diretiva:valor]]` |
-| `_SPECIAL_KEYS` | `dict[str, Key]` | Mapa de nome de tecla → constante pynput.Key |
+| `_SPECIAL_KEYS` | `dict[str, Key]` | Mapa de nome de tecla → constante `pynput.Key`. Inclui aliases comuns (`del`→delete, `pgup`/`pgdn`→page up/down, `return`→enter, `escape`→esc, `ins`→insert) — sem eles, um acorde como `ctrl+alt+del` teria a tecla `del` silenciosamente descartada |
 
 #### Formato de instrução
 
@@ -148,6 +148,14 @@ Dataclass com todos os callbacks opcionais. Todos são chamados da **thread work
 | `t(key, **kwargs)` | Qualquer | Lookup de tradução; retorna `[chave]` se ausente |
 
 **Regra de thread safety:** nenhum widget é lido ou escrito de fora da thread principal. Os callbacks recebem dados primitivos e delegam modificações de UI via `self.after(0, ...)`.
+
+#### `CollapsibleFrame` (widget auxiliar em `app.py`)
+
+Seção recolhível (`ttk.Frame`) usada pelos painéis **Assistente IA**, **Bitwarden** e **Log de Sessão**, todos iniciando **recolhidos** para manter a janela compacta. Um botão-cabeçalho (estilo `-link`) alterna a visibilidade do corpo `self.body` — onde os widgets-filhos são criados. `set_title(text)` atualiza o texto do cabeçalho; por isso `_refresh_ui_text()` chama `self._af.set_title(...)` / `self._bf.set_title(...)` / `self._log_frame.set_title(...)` em vez de `.configure(text=...)`.
+
+#### Ordem de empacotamento (layout)
+
+O rodapé — barra de status, log, barra de progresso e contador de caracteres — é empacotado com `side="bottom"` **antes** da área de texto (o único widget com `expand=True`), lá no `__init__`. Consequência: ao reduzir a janela, só a área de texto encolhe; o rodapé mantém altura fixa e a barra de status (empacotada primeiro, portanto a última a ceder espaço) nunca é cortada.
 
 ---
 

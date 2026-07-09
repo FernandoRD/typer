@@ -20,13 +20,15 @@ _SPECIAL_KEYS: dict[str, Key] = {
     # Modifiers
     'ctrl': Key.ctrl, 'alt': Key.alt, 'altgr': Key.alt_gr,
     'shift': Key.shift, 'win': Key.cmd,
-    # Navigation / editing
-    'esc': Key.esc, 'tab': Key.tab, 'enter': Key.enter,
-    'backspace': Key.backspace, 'delete': Key.delete,
+    # Navigation / editing (with common aliases)
+    'esc': Key.esc, 'escape': Key.esc, 'tab': Key.tab,
+    'enter': Key.enter, 'return': Key.enter,
+    'backspace': Key.backspace, 'delete': Key.delete, 'del': Key.delete,
     'home': Key.home, 'end': Key.end,
-    'pageup': Key.page_up, 'pagedown': Key.page_down,
+    'pageup': Key.page_up, 'pgup': Key.page_up,
+    'pagedown': Key.page_down, 'pgdn': Key.page_down,
     'up': Key.up, 'down': Key.down, 'left': Key.left, 'right': Key.right,
-    'insert': Key.insert, 'space': Key.space,
+    'insert': Key.insert, 'ins': Key.insert, 'space': Key.space,
     # Lock / system
     'capslock': Key.caps_lock, 'numlock': Key.num_lock,
     'scrolllock': Key.scroll_lock, 'printscreen': Key.print_screen,

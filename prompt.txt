@@ -1,3 +1,0 @@
-O script typer.py é uma pequena aplicaçao que desenvolvi com o único propósito de digitar qualquer texto que tenha sido carregado nele. A força motriz para desenvolver esse projeto foi a gerencia remota de servidores cujo meio de conexão não permita copiar e colar grandes quantidades de texto. Eliminando a necessidade de se pedir ao administyrador do servidor remoto copiar o arquivo com o texto necessário, dando autonomia ao analista.
-Analise o aplicativo como um todo, crie um README.md adequado, uma referencia técnica adequada e proponha melhorias de código sob vários aspectos tais como desempenho, legibilidade, manutenção, etc.
-Também forneça sugestões de melhorias que aumentem as funcionalidades do aplicativo

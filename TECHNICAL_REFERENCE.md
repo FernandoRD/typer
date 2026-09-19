@@ -1,148 +1,226 @@
-# Referência Técnica — AutoTyper v2
+# Referência Técnica — AutoTyper
 
 ## Visão Geral
 
-O AutoTyper é uma aplicação de desktop single-file (`typer.py`) construída em Python. Ele simula pressionamentos de tecla em qualquer janela ativa do sistema operacional, digitando o texto carregado caractere por caractere com intervalo configurável.
+AutoTyper simula pressionamentos de tecla em qualquer janela ativa do SO, digitando texto caractere por caractere com intervalo configurável. Suporta marcadores embutidos no texto (`[[pause:N]]`, `[[speed:N]]`, `[[key:F5]]`) e modo por linha para scripts interativos. Um assistente de IA opcional (Anthropic Claude) gera o texto a digitar a partir de um prompt em linguagem natural.
 
 ---
 
-## Arquitetura
+## Estrutura do Pacote
 
-```
-typer.py
-│
-├── Módulo
-│   ├── TRANSLATIONS        — dict com todas as strings PT/EN
-│   ├── SPEED_PROFILES      — lista de perfis (ms, chave_de_tradução)
-│   ├── StatusStyle         — constantes de estilo de status
-│   ├── platform_mono_font()— fonte monoespaçada por plataforma
-│   ├── run_headless()      — modo CLI sem interface gráfica
-│   └── _parse_args()       — argparse
-│
-└── TyperApp (ttk.Window)
-    │
-    ├── UI (thread principal Tkinter)
-    │   ├── _build_header()     — título, idioma, Open/Save
-    │   ├── _build_settings()   — perfil, intervalo, espera, chunk, Start/Stop/Pause
-    │   ├── _check_wayland()    — aviso condicional Linux/Wayland
-    │   ├── _build_text_area()  — ScrolledText + bind KeyRelease
-    │   ├── _build_char_counter() — label de contagem de caracteres
-    │   ├── _build_progress()   — Progressbar
-    │   ├── _build_log()        — ScrolledText readonly (log de sessão)
-    │   └── _build_status_bar() — label de status inferior
-    │
-    └── Thread de digitação (daemon)
-        ├── _type_text()        — orquestra espera, tipo, finally
-        ├── _type_all()         — loop char-a-char com progresso
-        ├── _type_by_chunks()   — loop linha-a-linha
-        ├── _wait_for_enter_or_esc() — listener temporário em chunk mode
-        ├── _wait_if_paused()   — bloqueia enquanto pausado
-        └── _interruptible_sleep()  — sleep fragmentado, honra stop/pause
+```text
+typer.py               — shim de compatibilidade: importa e executa autotyper.__main__.main()
+autotyper/
+├── __init__.py        — docstring do pacote, sem exports
+├── __main__.py        — entry point: parse_args() → run_headless() ou TyperApp.mainloop()
+├── config.py          — TRANSLATIONS, SPEED_PROFILES, StatusStyle, platform_mono_font(), ModelInfo, AI_FALLBACK_MODELS, ai_system_prompt()
+├── markers.py         — Instruction, parse_instructions(), _MARKER_RE, _SPECIAL_KEYS
+├── drivers.py         — BaseKeyboardDriver, PynputDriver, EvdevDriver, get_keyboard_driver()
+├── engine.py          — TypingEngine, TypingCallbacks (sem dependência de tkinter)
+├── ai.py              — AIGenerator, AICallbacks, build_client(), has_credentials() (sem dependência de tkinter)
+├── vault.py           — BitwardenVault, VaultCallbacks, VaultItem, is_available() (sem dependência de tkinter)
+├── app.py             — TyperApp (GUI, tkinter/ttkbootstrap)
+└── cli.py             — parse_args(), run_headless()
 ```
 
 ---
 
-## Dependências
+## Módulos
 
-| Biblioteca | Versão mínima | Uso |
+### `autotyper/config.py`
+
+| Símbolo | Tipo | Descrição |
 | --- | --- | --- |
-| `ttkbootstrap` | 1.10.0 | Framework de UI (widgets + temas) |
-| `pynput` | 1.7.0 | Controle e monitoramento de teclado |
-| `tkinter` | stdlib | Base da UI |
-| `threading` | stdlib | Thread de digitação, eventos de controle |
-| `time` | stdlib | Intervalos e sleep |
-| `argparse` | stdlib | Flags de linha de comando |
-| `platform` | stdlib | Detecção de SO para fonte |
-| `os` | stdlib | Variáveis de ambiente (Wayland) |
-| `sys` | stdlib | Detecção de plataforma e saída |
-| `datetime` | stdlib | Timestamps no log de sessão |
+| `TRANSLATIONS` | `dict[str, dict[str, str]]` | Todas as strings visíveis ao usuário em EN e PT |
+| `SPEED_PROFILES` | `list[tuple[int \| None, str]]` | Pares `(ms, chave_tradução)` para o combo de perfil |
+| `StatusStyle` | `enum.StrEnum` | Constantes de estilo ttkbootstrap: `IDLE`, `SUCCESS`, `WARNING`, `ERROR` |
+| `platform_mono_font(size)` | `func → tuple[str, int]` | Fonte monoespaçada por plataforma (Consolas / Menlo / Monospace) |
+| `AI_MODEL` | `str` | Id de modelo usado como último recurso (`"claude-opus-4-8"`) |
+| `ModelInfo` | `dataclass` | `id`, `display_name`, `supports_adaptive: bool`, `effort_levels: tuple[str, ...]` |
+| `AI_FALLBACK_MODELS` | `list[ModelInfo]` | Lista estática usada só quando a Models API não pode ser consultada (sem `anthropic`, sem credencial, ou erro de rede) |
+| `ai_system_prompt(lang)` | `func → str` | System prompt do assistente, com nota de idioma para os comentários |
+
+---
+
+### `autotyper/ai.py`
+
+Sem dependência de tkinter — espelha `engine.py`. Roda a chamada à API numa daemon thread e reporta via `AICallbacks`.
+
+| Símbolo | Tipo | Descrição |
+| --- | --- | --- |
+| `is_available()` | `func → bool` | True se o pacote `anthropic` está instalado |
+| `has_credentials()` | `func → bool` | True se há credencial (env, perfil `ant`, ou login do Claude Code) |
+| `is_auth_error(e)` | `func → bool` | True se a exceção é `anthropic.AuthenticationError` |
+| `build_client()` | `func → anthropic.Anthropic` | Resolve credenciais (ver *Resolução de Credenciais*) |
+| `list_models()` | `func → list[ModelInfo]` | Busca todos os modelos visíveis via `client.models.list()`, sem filtragem; lê `supports_adaptive`/`effort_levels` de `capabilities` |
+| `AICallbacks` | `dataclass` | `on_start`, `on_text(chunk)`, `on_done(full)`, `on_error(e)` — chamados da thread worker |
+| `AIGenerator` | `class` | `generate(prompt, lang, model, callbacks, supports_adaptive, effort)` inicia o streaming em daemon thread; `is_generating: bool` |
+
+#### Resolução de Credenciais (`build_client()`)
+
+Ordem de precedência, **sem armazenar nada localmente**:
+
+1. Env `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` → SDK resolve (`anthropic.Anthropic()`)
+2. Perfil `ant auth login` em `~/.config/anthropic/` → SDK resolve
+3. Login do Claude Code / VS Code em `~/.claude/.credentials.json` → `claudeAiOauth.accessToken` usado como token OAuth Bearer com header `anthropic-beta: oauth-2025-04-20`
+
+O token do item 3 é lido **a cada geração** (o Claude Code o renova no arquivo, então re-ler pega o token atualizado). Usa a cota da assinatura Claude, compartilhada com o Claude Code — `429` sob uso concorrente pesado.
+
+#### Thinking condicional e nível de effort
+
+`_run()` só inclui `thinking={"type": "adaptive"}` quando `supports_adaptive=True` é passado pelo chamador, e só inclui `output_config={"effort": ...}` quando um `effort` é passado. Esses dois valores vêm do `ModelInfo` do modelo selecionado (capacidades lidas dinamicamente via `list_models()`, não mais de um set fixo no código) — assim um modelo que não aceita adaptive thinking ou o parâmetro `effort` (ex.: Haiku 4.5, que rejeita ambos com HTTP 400) simplesmente não os recebe.
+
+#### Lista de modelos dinâmica
+
+`TyperApp` inicia com `AI_FALLBACK_MODELS` no combobox e, no fim do `__init__`, dispara `_refresh_ai_models_async()` numa thread daemon chamando `ai.list_models()`. Se a chamada tiver sucesso, `_apply_fetched_models()` substitui a lista (via `self.after(0, ...)`) sem filtrar nada — qualquer modelo novo ou mudança de versão aparece no próximo start sem alterar código. Falha de rede/credencial/lib mantém a lista estática em silêncio. O combobox de effort (`_ai_effort_combo`) é recalculado a cada troca de modelo (`_update_effort_options()`), mostrando só os níveis que aquele modelo suporta; fica desabilitado quando o modelo não suporta `effort`.
+
+---
+
+### `autotyper/markers.py`
+
+| Símbolo | Tipo | Descrição |
+| --- | --- | --- |
+| `Instruction` | `TypeAlias` | `tuple[str, str \| float \| None]` — um item da lista de instruções |
+| `parse_instructions(text)` | `func → list[Instruction]` | Converte texto bruto em lista de instruções tipadas |
+| `_MARKER_RE` | `re.Pattern` | Regex que reconhece `[[diretiva:valor]]` |
+| `_SPECIAL_KEYS` | `dict[str, Key]` | Mapa de nome de tecla → constante `pynput.Key`. Inclui aliases comuns (`del`→delete, `pgup`/`pgdn`→page up/down, `return`→enter, `escape`→esc, `ins`→insert) — sem eles, um acorde como `ctrl+alt+del` teria a tecla `del` silenciosamente descartada |
+
+#### Formato de instrução
+
+| Tupla | Significado |
+| --- | --- |
+| `('char', str)` | Digitar este caractere |
+| `('pause', float)` | Aguardar N segundos (só aceito se N > 0) |
+| `('speed', float)` | Alterar intervalo para N ms (só aceito se N > 0) |
+| `('speed', None)` | Restaurar intervalo base |
+| `('key', str)` | Pressionar tecla ou combinação (`'ctrl+c'`, `'F5'`, `'win'`) |
+
+Marcadores com valor numérico ≤ 0, formato inválido ou diretiva desconhecida são silenciosamente descartados.
+
+---
+
+### `autotyper/drivers.py`
+
+Camada de abstração para controle de teclado e interceptação de teclas de controle (`ESC` e `ENTER`).
+
+| Símbolo | Tipo | Descrição |
+| --- | --- | --- |
+| `BaseKeyboardDriver` | Classe base (ABC) | Define a interface: `type_char`, `tap_enter`, `press_special_key`, `start_esc_listener`, `wait_for_enter_or_esc`, `close` |
+| `PynputDriver` | Classe | Implementação baseada em `pynput.keyboard` (Windows, macOS e Linux X11) |
+| `EvdevDriver` | Classe | Implementação nativa Linux via `/dev/uinput` e `/dev/input/event*` (Wayland) |
+| `is_wayland() → bool` | Função | Detecta se a sessão gráfica atual é Wayland (`XDG_SESSION_TYPE` ou `WAYLAND_DISPLAY`) |
+| `can_use_evdev() → bool` | Função | Valida se a biblioteca `evdev` está disponível e `/dev/uinput` tem permissão de escrita |
+| `get_keyboard_driver() → tuple` | Função factory | Retorna `(driver_instance, "evdev" \| "pynput")` com detecção e fallback automático |
+
+---
+
+### `autotyper/engine.py`
+
+#### `TypingCallbacks`
+
+Dataclass com todos os callbacks opcionais. Todos são chamados da **thread worker** — o chamador é responsável por despachar para a thread principal se necessário.
+
+| Campo | Assinatura | Quando |
+| --- | --- | --- |
+| `on_session_start` | `(dt_str: str, total: int)` | Antes do wait inicial |
+| `on_waiting` | `(wait_s: float)` | Ao iniciar o período de espera |
+| `on_progress` | `(done: int, total: int)` | A cada lote de chars digitados (modo normal) |
+| `on_chunk_done` | `(cur: int, total: int)` | Após cada linha (modo chunk) |
+| `on_done` | `(stopped: bool, done: int, total: int)` | Ao encerrar a sessão |
+| `on_error` | `(e: Exception)` | Em caso de exceção no worker |
+| `on_stop_requested` | `()` | Quando ESC é pressionado dentro do engine |
+
+#### `TypingEngine`
+
+| Membro | Descrição |
+| --- | --- |
+| `start(text, wait_s, interval_s, chunk_mode, callbacks)` | Inicia o worker em daemon thread. `interval_s` é em **segundos** |
+| `stop()` | Sinaliza parada imediata (idempotente) |
+| `toggle_pause() → bool` | Alterna pause/resume; retorna `True` se agora pausado |
+| `is_typing: bool` | Propriedade — True enquanto o worker estiver ativo |
+| `is_paused: bool` | Propriedade — True enquanto pausado |
+
+**Nota de contrato:** `interval_s` está em segundos. Converta ms → s antes de chamar (`interval_ms / 1000.0`).
+
+---
+
+### `autotyper/app.py` — `TyperApp`
+
+| Método | Thread | Descrição |
+| --- | --- | --- |
+| `__init__(lang, initial_file, interval_ms, wait_s)` | Principal | Constrói a janela; `interval_ms` é em ms (convertido internamente) |
+| `start_typing_thread()` | Principal | Lê widgets, constrói `TypingCallbacks`, chama `engine.start()` |
+| `generate_with_ai()` | Principal | Lê prompt, modelo e effort; valida credenciais, constrói `AICallbacks` e chama `AIGenerator.generate()` |
+| `_ai_on_start/_text/_done/_error` | Principal (via after) | Handlers de streaming: limpa editor no 1º chunk, insere texto, reabilita controles, mapeia erro de auth |
+| `_selected_model_info()` | Principal | Retorna o `ModelInfo` escolhido no combobox (fallback: primeiro da lista) |
+| `_selected_model()` | Principal | Retorna o `id` do modelo escolhido |
+| `_selected_effort()` | Principal | Retorna o nível de effort escolhido, ou `None` se o modelo não suporta |
+| `_refresh_ai_models_async()` | Principal (dispara thread) | Busca `ai.list_models()` em background e aplica o resultado via `after(0, ...)` |
+| `request_stop()` | Qualquer | Para o engine; seguro chamar de qualquer thread |
+| `_toggle_pause()` | Principal | Delega ao engine e atualiza botão |
+| `_on_chunk_done(cur, total)` | Principal (via after) | Atualiza log, status e barra de progresso após cada linha |
+| `_on_typing_error(e)` | Principal (via after) | Exibe erro no status e no log |
+| `_on_typing_done(stopped, done, total)` | Principal (via after) | Atualiza log, status e reseta UI |
+| `update_status(text, style)` | Qualquer | Thread-safe via `after(0, ...)` |
+| `t(key, **kwargs)` | Qualquer | Lookup de tradução; retorna `[chave]` se ausente |
+
+**Regra de thread safety:** nenhum widget é lido ou escrito de fora da thread principal. Os callbacks recebem dados primitivos e delegam modificações de UI via `self.after(0, ...)`.
+
+#### `CollapsibleFrame` (widget auxiliar em `app.py`)
+
+Seção recolhível (`ttk.Frame`) usada pelos painéis **Assistente IA**, **Bitwarden** e **Log de Sessão**, todos iniciando **recolhidos** para manter a janela compacta. Um botão-cabeçalho (estilo `-link`) alterna a visibilidade do corpo `self.body` — onde os widgets-filhos são criados. `set_title(text)` atualiza o texto do cabeçalho; por isso `_refresh_ui_text()` chama `self._af.set_title(...)` / `self._bf.set_title(...)` / `self._log_frame.set_title(...)` em vez de `.configure(text=...)`.
+
+#### Ordem de empacotamento (layout)
+
+O rodapé — barra de status, log, barra de progresso e contador de caracteres — é empacotado com `side="bottom"` **antes** da área de texto (o único widget com `expand=True`), lá no `__init__`. Consequência: ao reduzir a janela, só a área de texto encolhe; o rodapé mantém altura fixa e a barra de status (empacotada primeiro, portanto a última a ceder espaço) nunca é cortada.
+
+---
+
+### `autotyper/cli.py`
+
+| Símbolo | Descrição |
+| --- | --- |
+| `parse_args() → Namespace` | Argparse com flags `--file`, `--interval`, `--wait`, `--lang`, `--headless` |
+| `run_headless(file_path, interval_ms, wait_s)` | Modo sem GUI; `interval_ms` é em ms (dividido por 1000 antes de passar ao engine) |
 
 ---
 
 ## Modelo de Threading
 
-A aplicação usa dois `threading.Event` para coordenar a thread de digitação com a UI:
+```text
+Thread principal (Tkinter event loop)
+│
+│  engine.start(...)
+│       └─── Thread worker (daemon)
+│                ├── _run()
+│                │    ├── _type_all()      — normal mode
+│                │    └── _type_by_chunks() — chunk mode
+│                └── callbacks → self.after(0, fn) → thread principal
+│
+│  _stop_event.set() / _pause_event.clear()   ← UI → worker
+│  self.after(0, callback)                    ← worker → UI
+```
 
-| Evento | Estado inicial | Significado |
+| Evento | Estado inicial | Semântica |
 | --- | --- | --- |
 | `_stop_event` | cleared | `set()` = parar imediatamente |
 | `_pause_event` | set | `set()` = rodando; `clear()` = pausado |
 
-### Comunicação entre threads
-
-| Direção | Mecanismo |
-| --- | --- |
-| UI → thread | `_stop_event.set()` / `_pause_event.clear()` |
-| Thread → UI | `self.after(0, callback)` — agenda na thread principal |
-
-O texto e os valores de configuração são capturados na thread principal dentro de `start_typing_thread()` e passados como argumentos para a thread secundária. **Nenhum widget é lido de fora da thread principal.**
+`_interruptible_sleep(seconds)` dorme em chunks de ≤ 20ms, testando `_stop_event` e `_pause_event` a cada iteração. Latência máxima de reação ao stop/pause: ~50ms.
 
 ---
 
-## Internacionalização (i18n)
+## Marcadores — Fluxo de Parsing
 
-Todas as strings visíveis ao usuário estão em `TRANSLATIONS["en"]` e `TRANSLATIONS["pt"]`. O método `t(key, **kwargs)` faz a lookup e formatação:
-
-```python
-self.t("status_typing", done=50, total=200)
-# → "Typing… 50/200 chars"  (EN)
-# → "Digitando… 50/200 caracteres"  (PT)
+```text
+texto bruto
+    ↓ parse_instructions(text)
+list[Instruction]
+    ↓ engine._type_all() / _type_by_chunks()
+ações de teclado + sleeps
 ```
 
-A troca de idioma dispara `_refresh_ui_text()`, que reconfigura todos os widgets sem recriar a janela.
-
----
-
-## Referência da Classe `TyperApp`
-
-### `__init__(self, lang, initial_file, interval_ms, wait_s)`
-
-| Parâmetro | Tipo | Padrão | Descrição |
-| --- | --- | --- | --- |
-| `lang` | `str` | `"en"` | Idioma inicial (`"en"` ou `"pt"`) |
-| `initial_file` | `str \| None` | `None` | Arquivo a carregar ao iniciar |
-| `interval_ms` | `int` | `100` | Intervalo inicial entre teclas (ms) |
-| `wait_s` | `float` | `2.0` | Espera inicial antes de digitar (s) |
-
----
-
-### Métodos de controle
-
-| Método | Thread | Descrição |
-| --- | --- | --- |
-| `start_typing_thread()` | Principal | Valida entrada, captura texto, inicia thread |
-| `request_stop()` | Qualquer | Sinaliza parada (idempotente) |
-| `_toggle_pause()` | Principal | Alterna entre pause/resume |
-| `_reset_ui()` | Principal (via after) | Restaura botões ao estado inicial |
-
----
-
-### Métodos da thread de digitação
-
-| Método | Descrição |
-| --- | --- |
-| `_type_text(text, wait_s, interval_ms, chunk_mode)` | Orquestra a sessão de digitação |
-| `_type_all(text, interval_ms, total)` | Digita todo o texto de uma vez |
-| `_type_by_chunks(text, interval_ms)` | Digita linha a linha, aguardando ENTER |
-| `_wait_for_enter_or_esc()` | Bloqueia até ENTER (True) ou ESC (False) |
-| `_wait_if_paused()` | Bloqueia enquanto pausado; False se parado |
-| `_interruptible_sleep(seconds)` | Sleep fragmentado em chunks de 20ms |
-
----
-
-### `_interruptible_sleep(seconds)`
-
-Em vez de `time.sleep(interval)` simples (que bloquearia a resposta ao stop/pause), o sleep é fragmentado:
-
-```
-while tempo não esgotou:
-    se stop_event → retorna False
-    se pausado    → espera 50ms e re-testa (sem consumir o budget)
-    senão         → dorme min(20ms, tempo_restante)
-retorna True
-```
-
-Isso garante que ao pressionar ESC ou STOP, a parada ocorre em no máximo ~50ms.
+`[[speed:N]]` armazena N em ms na instrução. O engine converte para segundos no momento de aplicar (`val / 1000.0`), mantendo `base_interval` (em s) como referência para `[[speed:reset]]`.
 
 ---
 
@@ -154,41 +232,37 @@ SPEED_PROFILES = [
     (100,  "prof_normal"),  # Normal
     (50,   "prof_fast"),    # Rápido  / Fast
     (10,   "prof_turbo"),   # Turbo
-    (None, "prof_custom"),  # Personalizado / Custom (entrada livre)
+    (None, "prof_custom"),  # Personalizado / Custom
 ]
 ```
 
-Ao selecionar um perfil, o campo de intervalo é atualizado automaticamente. Ao editar o campo manualmente, o combo seleciona "Custom" se o valor não corresponder a nenhum perfil.
+Selecionar um perfil atualiza o campo de intervalo. Editar o campo manualmente seleciona "Custom" se o valor não corresponder a nenhum perfil.
 
 ---
 
 ## Modo Linha por Linha (Chunk Mode)
 
-Quando ativado, o texto é dividido por `\n`. Após cada linha:
-
-1. O status exibe a instrução para pressionar ENTER ou ESC.
-2. Um `pynput.Listener` temporário aguarda a tecla.
-3. ENTER → a linha seguinte começa; ESC → `request_stop()`.
-
-Isso permite digitar scripts interativos onde cada linha requer confirmação visual.
+1. `parse_instructions` retorna a lista completa (incluindo `('char', '\n')`).
+2. `_type_by_chunks` divide a lista em sub-listas por `\n`.
+3. Após cada sub-lista, dispara `on_chunk_done` e bloqueia em `_wait_for_enter_or_esc`.
+4. ENTER → pressiona Enter no teclado e avança para a próxima linha; ESC → `request_stop()`.
 
 ---
 
-## Modo CLI (Headless)
+## Fluxo de Estados
 
-```bash
-python typer.py --file script.txt --interval 80 --wait 3 --headless
+```text
+[IDLE]
+  │  START
+  ▼
+[WAITING]   — _interruptible_sleep(wait_s)
+  │
+  ▼
+[TYPING]    — _type_all() ou _type_by_chunks()
+  ├── ESC / STOP ──→ [STOPPED]
+  ├── PAUSE ────────→ [PAUSED] ──→ RESUME ──→ [TYPING]
+  └── fim do texto ──→ [DONE] ──→ [IDLE]
 ```
-
-| Flag | Curta | Tipo | Padrão | Descrição |
-| --- | --- | --- | --- | --- |
-| `--file` | `-f` | str | — | Arquivo de texto a digitar |
-| `--interval` | `-i` | float | 100 | Intervalo entre teclas (ms) |
-| `--wait` | `-w` | float | 2 | Espera antes de digitar (s) |
-| `--lang` | `-l` | str | en | Idioma da UI (`en`/`pt`) |
-| `--headless` | — | flag | — | Sem GUI; requer `--file` |
-
-Em modo headless, o Tkinter não é iniciado. O texto é digitado diretamente usando `pynput.Controller` na thread principal. ESC e Ctrl+C interrompem a operação.
 
 ---
 
@@ -199,26 +273,20 @@ Em modo headless, o Tkinter não é iniciado. O texto é digitado diretamente us
 | Windows 10/11 | Totalmente suportado | Fonte: Consolas |
 | macOS | Suportado | Requer permissão de Acessibilidade; fonte: Menlo |
 | Linux X11 | Suportado | Fonte: Monospace |
-| Linux Wayland | Não suportado | Aviso exibido automaticamente |
+| Linux Wayland | Suportado | Driver nativo via evdev (uinput); ver WAYLAND.md |
 
 ---
 
-## Fluxo de Estados
+## Notas de Compatibilidade de Biblioteca
 
-```text
-[IDLE]
-  │  clique em START / python typer.py --headless
-  ▼
-[WAITING]    — _interruptible_sleep(wait_s)
-  │
-  ▼
-[TYPING]     — loop de digitação (_type_all ou _type_by_chunks)
-  │  ESC / STOP
-  ├──────────────────→ [STOPPED]
-  │  PAUSE
-  ├──────────────────→ [PAUSED] → RESUME → [TYPING]
-  │  texto esgotado
-  ▼
-[DONE]
-  └──→ [IDLE]
+### ttkbootstrap >= 1.20.0 — ScrolledText
+
+`ScrolledText` passou a herdar de `Frame` (não mais de `Text`). O widget interno é acessado via `.text`:
+
+```python
+self._log_text.text.configure(state="disabled")   # correto
+self._log_text.text.insert("end", msg)
+self._log_text.configure(state="disabled")        # TclError — Frame não tem state
 ```
+
+Import path: `from ttkbootstrap.widgets.scrolled import ScrolledText`.

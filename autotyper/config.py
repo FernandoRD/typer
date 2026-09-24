@@ -59,6 +59,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log_stopped":    "=== Stopped: {chars}/{total} chars typed ===",
         # Char counter
         "chars_count":    "{total} chars",
+        "text_areas_label": "Text areas:",
         # Insert button + marker hint
         "insert_btn":     "📥 Insert Marker ▾",
         "marker_hint":    "[[pause:N]] · [[speed:N]] · [[key:F5]] · [[key:ctrl+c]]",
@@ -159,6 +160,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "log_stopped":    "=== Interrompido: {chars}/{total} caracteres digitados ===",
         # Contador
         "chars_count":    "{total} caracteres",
+        "text_areas_label": "Áreas de texto:",
         # Botão inserir + hint marcadores
         "insert_btn":     "📥 Inserir Marcador ▾",
         "marker_hint":    "[[pause:N]] · [[speed:N]] · [[key:F5]] · [[key:ctrl+c]]",

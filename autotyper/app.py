@@ -3,7 +3,8 @@
 import os
 import sys
 import threading
-from tkinter import filedialog, Menu
+from math import ceil, sqrt
+from tkinter import TclError, filedialog, Menu
 
 import ttkbootstrap as ttk
 from ttkbootstrap.widgets.scrolled import ScrolledText
@@ -56,6 +57,8 @@ class CollapsibleFrame(ttk.Frame):
 
 
 class TyperApp(ttk.Window):
+
+    _MAX_TEXT_AREAS = 6
 
     def __init__(self, lang: str = "en", initial_file: str | None = None,
                  interval_ms: int = 100, wait_s: float = 2.0) -> None:
@@ -512,16 +515,70 @@ class TyperApp(ttk.Window):
             self._ai_effort_combo.configure(state="disabled")
 
     def _build_text_area(self) -> None:
-        tf = ttk.Frame(self)
-        tf.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 2))
-        self._text_info = ScrolledText(tf, height=8, width=100, font=platform_mono_font())
-        self._text_info.pack(fill="both", expand=True)
-        self._text_info.text.configure(undo=True)   # Ctrl+Z recovers AI replacement
-        self._text_info.bind("<KeyRelease>", lambda _e: self._update_char_count())
+        self._text_frame = ttk.Frame(self)
+        self._text_frame.pack(side="top", fill="both", expand=True, padx=20, pady=(0, 2))
+        self._text_areas: list[tuple[ttk.Frame, ScrolledText]] = []
+        self._active_text_info: ScrolledText | None = None
+        self._set_text_area_count()
+
+    def _set_text_area_count(self, _event=None) -> None:
+        """Show the requested editors, retaining hidden editors in memory."""
+        try:
+            count = int(self._text_area_count.get())
+        except (TclError, ValueError, TypeError):
+            count = 1
+        count = max(1, min(self._MAX_TEXT_AREAS, count))
+        self._text_area_count.set(count)
+
+        while len(self._text_areas) < count:
+            cell = ttk.Frame(self._text_frame, padding=2)
+            editor = ScrolledText(cell, height=8, width=100, font=platform_mono_font())
+            editor.pack(fill="both", expand=True)
+            editor.text.configure(undo=True)
+            editor.text.bind("<FocusIn>", lambda _e, e=editor: self._set_active_text(e))
+            editor.text.bind("<KeyRelease>", lambda _e: self._update_char_count())
+            self._text_areas.append((cell, editor))
+
+        columns_before, rows_before = self._text_frame.grid_size()
+        for cell, _editor in self._text_areas:
+            cell.grid_forget()
+        for row in range(rows_before):
+            self._text_frame.rowconfigure(row, weight=0)
+        for column in range(columns_before):
+            self._text_frame.columnconfigure(column, weight=0)
+
+        columns = ceil(sqrt(count))
+        rows = ceil(count / columns)
+        for index, (cell, _editor) in enumerate(self._text_areas[:count]):
+            cell.grid(row=index // columns, column=index % columns, sticky="nsew")
+        for row in range(rows):
+            self._text_frame.rowconfigure(row, weight=1)
+        for column in range(columns):
+            self._text_frame.columnconfigure(column, weight=1)
+
+        visible_editors = [editor for _cell, editor in self._text_areas[:count]]
+        if self._active_text_info not in visible_editors:
+            self._set_active_text(visible_editors[0])
+
+    def _set_active_text(self, editor: ScrolledText) -> None:
+        self._active_text_info = editor
+        self._update_char_count()
+
+    def _active_text(self) -> ScrolledText:
+        return self._active_text_info or self._text_areas[0][1]
 
     def _build_char_counter(self) -> None:
         row = ttk.Frame(self)
         row.pack(side="bottom", fill="x", padx=22, pady=(2, 0))
+        self._lbl_text_areas = ttk.Label(row, text=self.t("text_areas_label"))
+        self._lbl_text_areas.pack(side="left", padx=(0, 5))
+        self._text_area_count = ttk.IntVar(value=1)
+        self._text_area_spinbox = ttk.Spinbox(
+            row, from_=1, to=self._MAX_TEXT_AREAS, width=3,
+            textvariable=self._text_area_count, command=self._set_text_area_count)
+        self._text_area_spinbox.pack(side="left")
+        self._text_area_spinbox.bind("<Return>", self._set_text_area_count)
+        self._text_area_spinbox.bind("<FocusOut>", self._set_text_area_count)
         self._insert_btn = ttk.Button(row, text=self.t("insert_btn"), width=22,
                                       bootstyle="info-outline",
                                       command=self._show_insert_menu)
@@ -662,10 +719,11 @@ class TyperApp(ttk.Window):
                                btn.winfo_rooty() + btn.winfo_height())
 
     def _insert_marker(self, marker: str) -> None:
+        editor = self._active_text()
         try:
-            self._text_info.insert("insert", marker)
+            editor.insert("insert", marker)
         except Exception:
-            self._text_info.insert("end", marker)
+            editor.insert("end", marker)
         self._update_char_count()
 
     def _build_progress(self) -> None:
@@ -755,6 +813,7 @@ class TyperApp(ttk.Window):
         self._lbl_interval.configure(text=self.t("interval_label"))
         self._lbl_wait.configure(text=self.t("wait_label"))
         self._chk_chunk.configure(text=self.t("chunk_label"))
+        self._lbl_text_areas.configure(text=self.t("text_areas_label"))
         self._insert_btn.configure(text=self.t("insert_btn"))
         self._lbl_marker_hint.configure(text=self.t("marker_hint"))
         self._af.set_title(self.t("ai_title"))
@@ -830,7 +889,7 @@ class TyperApp(ttk.Window):
 
     def _update_char_count(self) -> None:
         try:
-            text = self._text_info.get("1.0", "end-1c")
+            text = self._active_text().get("1.0", "end-1c")
             total = sum(1 for op, _ in parse_instructions(text) if op == 'char')
         except Exception:
             total = 0
@@ -856,8 +915,9 @@ class TyperApp(ttk.Window):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
-            self._text_info.delete("1.0", "end")
-            self._text_info.insert("1.0", content)
+            editor = self._active_text()
+            editor.delete("1.0", "end")
+            editor.insert("1.0", content)
             self._update_char_count()
             self.update_status(self.t("file_loaded", name=os.path.basename(path)),
                                StatusStyle.SUCCESS)
@@ -871,7 +931,7 @@ class TyperApp(ttk.Window):
             defaultextension=".txt")
         if path:
             try:
-                content = self._text_info.get("1.0", "end-1c")
+                content = self._active_text().get("1.0", "end-1c")
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
                 self.update_status(self.t("file_saved"), StatusStyle.SUCCESS)
@@ -897,7 +957,7 @@ class TyperApp(ttk.Window):
 
     def start_typing_thread(self) -> None:
         # --- All widget reads happen here, in the main thread (thread-safe) ---
-        text = self._text_info.get("1.0", "end-1c")
+        text = self._active_text().get("1.0", "end-1c")
         if not text:
             self.update_status(self.t("err_empty"), StatusStyle.ERROR)
             return
@@ -962,6 +1022,7 @@ class TyperApp(ttk.Window):
         self._btn_action.configure(state="disabled")
         self.update_status(self.t("ai_generating"), StatusStyle.WARNING)
         self._ai_streamed = False   # editor is cleared on the first chunk, not before
+        self._ai_target_text = self._active_text()
 
         callbacks = AICallbacks(
             on_start=lambda: self.after(0, self._ai_on_start),
@@ -978,11 +1039,12 @@ class TyperApp(ttk.Window):
         self._log_append(self.t("ai_generating"))
 
     def _ai_on_text(self, chunk: str) -> None:
+        editor = self._ai_target_text
         if not self._ai_streamed:        # clear only once real output arrives
-            self._text_info.delete("1.0", "end")
+            editor.delete("1.0", "end")
             self._ai_streamed = True
-        self._text_info.insert("end", chunk)
-        self._text_info.see("end")
+        editor.insert("end", chunk)
+        editor.see("end")
 
     def _ai_on_done(self) -> None:
         self._update_char_count()

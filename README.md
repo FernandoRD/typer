@@ -62,6 +62,8 @@ python -m autotyper
 
 1. Cole o texto na área de texto ou use **📂 Open File** para carregar um `.txt`.
 2. Configure **intervalo entre teclas** e **tempo de espera** inicial.
+   Em Wayland, selecione também o **Layout do teclado**: use **ABNT2 (Português - Brasil)**
+   para uma sessão Citrix/NetScaler com esse layout; **US** continua sendo o padrão.
 3. Clique em **🚀 START TYPING** e troque imediatamente para a janela de destino.
 4. Para interromper: pressione `ESC` ou clique em **🛑 STOP**.
 

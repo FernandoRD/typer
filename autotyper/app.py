@@ -13,6 +13,7 @@ from .config import (TRANSLATIONS, SPEED_PROFILES, StatusStyle,
                      platform_mono_font, AI_MODEL, AI_FALLBACK_MODELS, ModelInfo)
 from .markers import parse_instructions
 from .engine import TypingEngine, TypingCallbacks
+from .drivers import normalize_evdev_layout
 from . import ai
 from .ai import AIGenerator, AICallbacks
 from . import vault
@@ -67,7 +68,10 @@ class TyperApp(ttk.Window):
 
         self.lang    = lang
         self._typing_error = False
-        self._engine = TypingEngine(keyboard_layout=keyboard_layout)
+        # Store the canonical name so the GUI reflects CLI aliases such as
+        # ``--keyboard-layout pt-br`` as the ABNT2 option.
+        self._keyboard_layout = normalize_evdev_layout(keyboard_layout)
+        self._engine = TypingEngine(keyboard_layout=self._keyboard_layout)
         self._ai     = AIGenerator()
         self._vault  = BitwardenVault()
         self._bw_items: list[VaultItem] = []
@@ -178,7 +182,7 @@ class TyperApp(ttk.Window):
         self._lbl_wait.grid(row=1, column=0, padx=(15, 5), pady=(5, 10), sticky="w")
 
         self._entry_wait = ttk.Entry(sf, width=8)
-        self._entry_wait.grid(row=1, column=1, padx=5, pady=(5, 10), sticky="w")
+        self._entry_wait.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         self._entry_wait.insert(0, str(wait_s))
 
         self._chunk_var = ttk.BooleanVar(value=False)
@@ -186,11 +190,24 @@ class TyperApp(ttk.Window):
                                           variable=self._chunk_var,
                                           bootstyle="info-round-toggle")
         self._chk_chunk.grid(row=1, column=2, columnspan=2,
-                              padx=(20, 5), pady=(5, 10), sticky="w")
+                              padx=(20, 5), pady=5, sticky="w")
 
-        # Action + Pause buttons (span both rows, right side)
+        # Row 2 ── Virtual keyboard layout.  This is mainly relevant to the
+        # native Wayland/evdev driver, but remains visible on every platform
+        # so a command-line layout choice is reflected in the GUI.
+        self._lbl_keyboard_layout = ttk.Label(sf, text=self.t("keyboard_layout_label"))
+        self._lbl_keyboard_layout.grid(row=2, column=0, padx=(15, 5), pady=(5, 10), sticky="w")
+        self._keyboard_layout_var = ttk.StringVar(value=self._keyboard_layout_display())
+        self._keyboard_layout_combo = ttk.Combobox(
+            sf, textvariable=self._keyboard_layout_var,
+            values=self._keyboard_layout_names(), state="readonly", width=20,
+            bootstyle="secondary")
+        self._keyboard_layout_combo.grid(row=2, column=1, padx=5, pady=(5, 10), sticky="w")
+        self._keyboard_layout_combo.bind("<<ComboboxSelected>>", self._on_keyboard_layout_change)
+
+        # Action + Pause buttons (span all settings rows, right side)
         btn_frame = ttk.Frame(sf)
-        btn_frame.grid(row=0, column=4, rowspan=2, padx=(20, 15), pady=10, sticky="e")
+        btn_frame.grid(row=0, column=4, rowspan=3, padx=(20, 15), pady=10, sticky="e")
 
         self._btn_action = ttk.Button(btn_frame, text=self.t("start_btn"), width=22,
                                       command=self.start_typing_thread, bootstyle="success")
@@ -421,6 +438,7 @@ class TyperApp(ttk.Window):
         self._btn_pause.configure(state="normal", text=self.t("pause_btn"))
         self._btn_ai.configure(state="disabled")
         self._set_ai_controls_enabled(False)
+        self._set_keyboard_layout_enabled(False)
         self.update_status(self.t("bw_typing_pw"), StatusStyle.WARNING)
 
         # Deliberately minimal callbacks: the secret must not reach the log, so
@@ -828,6 +846,7 @@ class TyperApp(ttk.Window):
         self._lbl_profile.configure(text=self.t("profile_label"))
         self._lbl_interval.configure(text=self.t("interval_label"))
         self._lbl_wait.configure(text=self.t("wait_label"))
+        self._lbl_keyboard_layout.configure(text=self.t("keyboard_layout_label"))
         self._chk_chunk.configure(text=self.t("chunk_label"))
         self._lbl_text_areas.configure(text=self.t("text_areas_label"))
         self._insert_btn.configure(text=self.t("insert_btn"))
@@ -851,6 +870,8 @@ class TyperApp(ttk.Window):
 
         self._profile_combo.configure(values=self._profile_names())
         self._sync_profile_combo(current_ms)
+        self._keyboard_layout_combo.configure(values=self._keyboard_layout_names())
+        self._keyboard_layout_var.set(self._keyboard_layout_display())
 
         if not self._engine.is_typing:
             self._btn_action.configure(text=self.t("start_btn"))
@@ -889,6 +910,47 @@ class TyperApp(ttk.Window):
             self._sync_profile_combo(int(self._entry_interval.get()))
         except ValueError:
             pass
+
+    # -----------------------------------------------------------------------
+    # Keyboard layout
+    # -----------------------------------------------------------------------
+    def _keyboard_layout_names(self) -> list[str]:
+        return [self.t("keyboard_layout_us"), self.t("keyboard_layout_abnt2")]
+
+    def _keyboard_layout_display(self) -> str:
+        return self.t(f"keyboard_layout_{self._keyboard_layout}")
+
+    def _set_keyboard_layout_enabled(self, enabled: bool) -> None:
+        self._keyboard_layout_combo.configure(state="readonly" if enabled else "disabled")
+
+    def _on_keyboard_layout_change(self, _event=None) -> None:
+        """Replace the idle engine so the next run uses the selected layout."""
+        names = self._keyboard_layout_names()
+        try:
+            selected = ("us", "abnt2")[names.index(self._keyboard_layout_var.get())]
+        except ValueError:
+            self._keyboard_layout_var.set(self._keyboard_layout_display())
+            return
+
+        if selected == self._keyboard_layout:
+            return
+        if self._engine.is_typing:
+            # The combobox is disabled while typing, but retain this guard in
+            # case a platform delivers a delayed selection event.
+            self._keyboard_layout_var.set(self._keyboard_layout_display())
+            return
+
+        try:
+            replacement = TypingEngine(keyboard_layout=selected)
+        except Exception as e:
+            self._keyboard_layout_var.set(self._keyboard_layout_display())
+            self.update_status(self.t("err_typing", e=e), StatusStyle.ERROR)
+            return
+
+        old_engine = self._engine
+        self._engine = replacement
+        self._keyboard_layout = selected
+        old_engine.close()
 
     # -----------------------------------------------------------------------
     # Status, progress, log helpers (all thread-safe via after())
@@ -994,6 +1056,7 @@ class TyperApp(ttk.Window):
         self._btn_pause.configure(state="normal", text=self.t("pause_btn"))
         self._btn_ai.configure(state="disabled")
         self._set_ai_controls_enabled(False)
+        self._set_keyboard_layout_enabled(False)
         self.update_status(self.t("status_start"), StatusStyle.WARNING)
 
         # Build callbacks — all called from worker thread, so wrap with after(0,...)
@@ -1113,3 +1176,4 @@ class TyperApp(ttk.Window):
         self._btn_pause.configure(state="disabled", text=self.t("pause_btn"))
         self._btn_ai.configure(state="normal")
         self._set_ai_controls_enabled(True)
+        self._set_keyboard_layout_enabled(True)

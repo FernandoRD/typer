@@ -127,12 +127,25 @@ class PynputDriver(BaseKeyboardDriver):
 
 # Scancode mapping tables for EvdevDriver
 _EVDEV_ASCII_MAP: dict[str, tuple[int, bool]] = {}
+_EVDEV_ASCII_MAPS: dict[str, dict[str, tuple[int, bool, bool]]] = {}
 _EVDEV_KEY_MAP: dict[str, int] = {}
 _EVDEV_INITIALIZED = False
 
+EVDEV_LAYOUTS = ("us", "abnt2")
+_EVDEV_LAYOUT_ALIASES = {"us": "us", "abnt2": "abnt2", "pt-br": "abnt2"}
+
+
+def normalize_evdev_layout(layout: str) -> str:
+    """Return the canonical evdev layout name or raise a clear error."""
+    normalized = _EVDEV_LAYOUT_ALIASES.get(layout.lower())
+    if normalized is None:
+        choices = ", ".join((*EVDEV_LAYOUTS, "pt-br"))
+        raise ValueError(f"Unsupported evdev keyboard layout {layout!r}; choose one of: {choices}")
+    return normalized
+
 
 def _init_evdev_maps() -> None:
-    global _EVDEV_INITIALIZED, _EVDEV_ASCII_MAP, _EVDEV_KEY_MAP
+    global _EVDEV_INITIALIZED, _EVDEV_ASCII_MAP, _EVDEV_ASCII_MAPS, _EVDEV_KEY_MAP
     if _EVDEV_INITIALIZED:
         return
 
@@ -173,6 +186,24 @@ def _init_evdev_maps() -> None:
         '&': (e.KEY_7, True), '*': (e.KEY_8, True), '(': (e.KEY_9, True),
         ')': (e.KEY_0, True),
     }
+
+    _EVDEV_ASCII_MAPS = {
+        "us": {char: (code, shift, False) for char, (code, shift) in _EVDEV_ASCII_MAP.items()},
+    }
+    # Based on xkeyboard-config's br(abnt2) symbols.  AltGr is needed only
+    # where ABNT2 exposes an ASCII character on its third level.
+    abnt2 = dict(_EVDEV_ASCII_MAPS["us"])
+    abnt2.update({
+        "'": (e.KEY_GRAVE, False, False), '"': (e.KEY_GRAVE, True, False),
+        '[': (e.KEY_RIGHTBRACE, False, False), '{': (e.KEY_RIGHTBRACE, True, False),
+        ']': (e.KEY_BACKSLASH, False, False), '}': (e.KEY_BACKSLASH, True, False),
+        '\\': (e.KEY_102ND, False, False), '|': (e.KEY_102ND, True, False),
+        ';': (e.KEY_SLASH, False, False), ':': (e.KEY_SLASH, True, False),
+        '/': (e.KEY_RO, False, False), '?': (e.KEY_RO, True, False),
+        '~': (e.KEY_APOSTROPHE, False, True), '^': (e.KEY_APOSTROPHE, True, True),
+        '`': (e.KEY_LEFTBRACE, True, True),
+    })
+    _EVDEV_ASCII_MAPS["abnt2"] = abnt2
 
     _EVDEV_KEY_MAP = {
         'f1': e.KEY_F1, 'f2': e.KEY_F2, 'f3': e.KEY_F3, 'f4': e.KEY_F4,
@@ -276,13 +307,15 @@ class EvdevDriver(BaseKeyboardDriver):
 
     VIRTUAL_NAME = "AutoTyper-Virtual-Keyboard"
 
-    def __init__(self) -> None:
+    def __init__(self, layout: str = "us") -> None:
         _init_evdev_maps()
         from evdev import UInput, ecodes as e
 
-        supported_keys = set(code for code, _ in _EVDEV_ASCII_MAP.values()) | set(_EVDEV_KEY_MAP.values()) | {
+        self.layout = normalize_evdev_layout(layout)
+        self._ascii_map = _EVDEV_ASCII_MAPS[self.layout]
+        supported_keys = set(code for code, _, _ in self._ascii_map.values()) | set(_EVDEV_KEY_MAP.values()) | {
             e.KEY_LEFTSHIFT, e.KEY_RIGHTSHIFT, e.KEY_LEFTCTRL, e.KEY_RIGHTCTRL,
-            e.KEY_LEFTALT, e.KEY_RIGHTALT, e.KEY_LEFTMETA
+            e.KEY_LEFTALT, e.KEY_RIGHTALT, e.KEY_LEFTMETA, e.KEY_102ND, e.KEY_RO,
         }
         self._ui = UInput({e.EV_KEY: list(supported_keys)}, name=self.VIRTUAL_NAME)
         # Give compositor a moment to register the new virtual device
@@ -291,16 +324,20 @@ class EvdevDriver(BaseKeyboardDriver):
     def type_char(self, char: str) -> None:
         from evdev import ecodes as e
 
-        mapping = _EVDEV_ASCII_MAP.get(char)
+        mapping = self._ascii_map.get(char)
         if not mapping:
-            return
-        code, shift = mapping
+            raise ValueError(f"Character {char!r} is not supported by the {self.layout} evdev layout")
+        code, shift, altgr = mapping
         if shift:
             self._ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1)
+        if altgr:
+            self._ui.write(e.EV_KEY, e.KEY_RIGHTALT, 1)
         self._ui.write(e.EV_KEY, code, 1)
         self._ui.syn()
         time.sleep(0.002)
         self._ui.write(e.EV_KEY, code, 0)
+        if altgr:
+            self._ui.write(e.EV_KEY, e.KEY_RIGHTALT, 0)
         if shift:
             self._ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0)
         self._ui.syn()
@@ -318,35 +355,54 @@ class EvdevDriver(BaseKeyboardDriver):
 
         parts = [p.strip().lower() for p in key_spec.split('+')]
 
-        def resolve(name: str) -> int | None:
+        def resolve(name: str) -> tuple[int, bool, bool] | None:
             k = _EVDEV_KEY_MAP.get(name)
             if k is not None:
-                return k
+                return k, False, False
             if len(name) == 1:
-                m = _EVDEV_ASCII_MAP.get(name)
+                m = self._ascii_map.get(name)
                 if m:
-                    return m[0]
+                    return m
             return None
 
-        keys = [k for k in (resolve(p) for p in parts) if k is not None]
-        if not keys:
-            return
-        if len(keys) == 1:
-            self._ui.write(e.EV_KEY, keys[0], 1)
+        keys = [resolve(part) for part in parts]
+        if not all(keys):
+            raise ValueError(f"Unsupported special key {key_spec!r} for the {self.layout} evdev layout")
+        resolved = [key for key in keys if key is not None]
+        if len(resolved) == 1:
+            code, shift, altgr = resolved[0]
+            if shift:
+                self._ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1)
+            if altgr:
+                self._ui.write(e.EV_KEY, e.KEY_RIGHTALT, 1)
+            self._ui.write(e.EV_KEY, code, 1)
             self._ui.syn()
             time.sleep(0.005)
-            self._ui.write(e.EV_KEY, keys[0], 0)
+            self._ui.write(e.EV_KEY, code, 0)
+            if altgr:
+                self._ui.write(e.EV_KEY, e.KEY_RIGHTALT, 0)
+            if shift:
+                self._ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0)
             self._ui.syn()
         else:
             held: list[int] = []
             try:
-                for k in keys[:-1]:
-                    self._ui.write(e.EV_KEY, k, 1)
-                    held.append(k)
-                self._ui.write(e.EV_KEY, keys[-1], 1)
+                for code, _, _ in resolved[:-1]:
+                    self._ui.write(e.EV_KEY, code, 1)
+                    held.append(code)
+                code, shift, altgr = resolved[-1]
+                if shift and e.KEY_LEFTSHIFT not in held:
+                    self._ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1)
+                if altgr and e.KEY_RIGHTALT not in held:
+                    self._ui.write(e.EV_KEY, e.KEY_RIGHTALT, 1)
+                self._ui.write(e.EV_KEY, code, 1)
                 self._ui.syn()
                 time.sleep(0.005)
-                self._ui.write(e.EV_KEY, keys[-1], 0)
+                self._ui.write(e.EV_KEY, code, 0)
+                if altgr and e.KEY_RIGHTALT not in held:
+                    self._ui.write(e.EV_KEY, e.KEY_RIGHTALT, 0)
+                if shift and e.KEY_LEFTSHIFT not in held:
+                    self._ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0)
                 self._ui.syn()
             finally:
                 for k in reversed(held):
@@ -419,15 +475,16 @@ def can_use_evdev() -> bool:
         return False
 
 
-def get_keyboard_driver() -> tuple[BaseKeyboardDriver, str]:
+def get_keyboard_driver(layout: str = "us") -> tuple[BaseKeyboardDriver, str]:
     """
     Instantiate and return (driver_instance, driver_name).
     driver_name is 'evdev' or 'pynput'.
     Falls back gracefully to PynputDriver if EvdevDriver cannot be created.
     """
+    layout = normalize_evdev_layout(layout)
     if is_wayland() and can_use_evdev():
         try:
-            return EvdevDriver(), "evdev"
+            return EvdevDriver(layout), "evdev"
         except Exception:
             pass
     return PynputDriver(), "pynput"

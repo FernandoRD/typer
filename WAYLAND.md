@@ -44,7 +44,7 @@ graph TD
 
 Quando `/dev/uinput` é acessível, o driver pode publicar um teclado virtual no subsistema de entrada do kernel. O compositor normalmente recebe os eventos como os de um dispositivo de entrada; o resultado, porém, depende da política do compositor, do assento/sessão, do hardware virtualizado e das permissões locais. Portanto, a compatibilidade deve ser descrita por ambientes testados, não por uma afirmação de funcionamento em qualquer janela ou distribuição.
 
-Para digitação de texto, a correção proposta é introduzir suporte explícito ao layout selecionado (ao menos US e ABNT2) ou recusar caracteres não mapeáveis com erro visível. Nunca se deve descartar caracteres sem informar o usuário.
+Para digitação de texto, o layout é selecionado explicitamente pela opção `--keyboard-layout`: `us` (padrão), `abnt2` e o alias `pt-br`. O mapa ABNT2 segue `br(abnt2)` do xkeyboard-config e ajusta, entre outros, `[`, `]`, `\\`, `|`, `/`, `?`, `;` e `:`; `~`, `^` e a crase usam AltGr. Caracteres ou marcadores `[[key:<caractere>]]` que não estiverem no mapa agora resultam em erro visível, em vez de serem descartados. PT-PT não é um alias de ABNT2 e não é detectado automaticamente.
 
 Para os controles, a inicialização deve testar separadamente a criação do teclado virtual e a abertura de ao menos um teclado físico adequado. Se a segunda etapa falhar, a interface deve deixar claro que `ESC` e o avanço por `ENTER` não estão disponíveis e não iniciar um modo que dependa deles. O driver também precisa reagir a hotplug e atualizar esse estado na interface.
 

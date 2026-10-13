@@ -24,12 +24,12 @@ class TypingCallbacks:
 class TypingEngine:
     """Runs the typing worker thread; communicates back via TypingCallbacks."""
 
-    def __init__(self, driver: BaseKeyboardDriver | None = None) -> None:
+    def __init__(self, driver: BaseKeyboardDriver | None = None, keyboard_layout: str = "us") -> None:
         if driver is not None:
             self._driver = driver
             self.driver_name = getattr(driver, "name", "custom")
         else:
-            self._driver, self.driver_name = get_keyboard_driver()
+            self._driver, self.driver_name = get_keyboard_driver(keyboard_layout)
 
         self._stop_event   = threading.Event()
         self._pause_event  = threading.Event()

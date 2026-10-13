@@ -146,6 +146,8 @@ O login persiste entre sessões — você não precisa repeti-lo a cada vez, só
 
 ```bash
 python typer.py --headless --file script.txt --interval 80 --wait 3
+# Wayland/Citrix with a Brazilian ABNT2 target layout:
+python typer.py --keyboard-layout abnt2
 ```
 
 | Flag | Curta | Padrão | Descrição |
@@ -154,6 +156,7 @@ python typer.py --headless --file script.txt --interval 80 --wait 3
 | `--interval` | `-i` | `100` | Intervalo entre teclas (ms) |
 | `--wait` | `-w` | `2` | Segundos de espera antes de iniciar |
 | `--lang` | `-l` | `en` | Idioma da UI (`en` / `pt`) |
+| `--keyboard-layout` | — | `us` | Layout do teclado virtual Wayland: `us`, `abnt2` ou alias `pt-br` |
 | `--headless` | — | — | Executa sem janela gráfica |
 
 ---
@@ -182,6 +185,7 @@ requirements.txt
 
 O AutoTyper possui suporte nativo tanto para sessões **X11** quanto para **Wayland**:
 - Em sessões **Wayland**, a aplicação ativa automaticamente o driver nativo baseado em `evdev` (`/dev/uinput`), criando um dispositivo de teclado virtual reconhecido diretamente pelo compositor (KDE Plasma, GNOME, Sway, Hyprland, etc.).
+- O layout do teclado virtual do `evdev` é **US** por padrão. Para um destino ABNT2 (por exemplo, uma sessão Citrix configurada como Português do Brasil), inicie com `--keyboard-layout abnt2` ou `--keyboard-layout pt-br`; isso ajusta símbolos como `[`, `|` e `/`. PT-PT não é mapeado e deve continuar usando `us` ou um layout suportado explicitamente.
 - Para detalhes de arquitetura e instruções de permissões udev caso necessário, consulte o documento completo em [WAYLAND.md](WAYLAND.md).
 - Em sessões **X11**, o driver `pynput` continua sendo utilizado com total transparência.
 

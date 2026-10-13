@@ -61,11 +61,13 @@ class TyperApp(ttk.Window):
     _MAX_TEXT_AREAS = 6
 
     def __init__(self, lang: str = "en", initial_file: str | None = None,
-                 interval_ms: int = 100, wait_s: float = 2.0) -> None:
+                 interval_ms: int = 100, wait_s: float = 2.0,
+                 keyboard_layout: str = "us") -> None:
         super().__init__(themename="darkly")
 
         self.lang    = lang
-        self._engine = TypingEngine()
+        self._typing_error = False
+        self._engine = TypingEngine(keyboard_layout=keyboard_layout)
         self._ai     = AIGenerator()
         self._vault  = BitwardenVault()
         self._bw_items: list[VaultItem] = []
@@ -413,6 +415,7 @@ class TyperApp(ttk.Window):
             return
 
         self.after(0, lambda: self._progress_var.set(0.0))
+        self._typing_error = False
         self._btn_action.configure(state="normal", text=self.t("stop_btn"),
                                    bootstyle="danger", command=self.request_stop)
         self._btn_pause.configure(state="normal", text=self.t("pause_btn"))
@@ -427,13 +430,26 @@ class TyperApp(ttk.Window):
             on_waiting=lambda s: self.update_status(
                 self.t("status_waiting", s=s), StatusStyle.WARNING),
             on_done=lambda stopped, done, total: self.after(
-                0, lambda: self._bw_on_type_done()),
-            on_error=lambda e: self.after(0, lambda e=e: self._on_typing_error(e)),
+                0, lambda: self._bw_on_type_done(stopped)),
+            on_error=lambda e: self.after(0, self._bw_on_type_error),
             on_stop_requested=self.request_stop,
         )
         self._engine.start(password, wait_s, interval_s, False, callbacks)
 
-    def _bw_on_type_done(self) -> None:
+    def _bw_on_type_error(self) -> None:
+        """Report a password typing failure without exposing the secret."""
+        self._typing_error = True
+        self.update_status(self.t("err_typing", e="password typing failed"), StatusStyle.ERROR)
+        self._log_append("ERROR: password typing failed")
+
+    def _bw_on_type_done(self, stopped: bool) -> None:
+        if self._typing_error:
+            self._reset_ui()
+            return
+        if stopped:
+            self.update_status(self.t("status_stopped"), StatusStyle.WARNING)
+            self._reset_ui()
+            return
         self._progress_var.set(100.0)
         self.update_status(self.t("status_done"), StatusStyle.SUCCESS)
         self._reset_ui()
@@ -970,6 +986,7 @@ class TyperApp(ttk.Window):
             return
 
         chunk_mode = self._chunk_var.get()
+        self._typing_error = False
 
         self.after(0, lambda: self._progress_var.set(0.0))
         self._btn_action.configure(state="normal", text=self.t("stop_btn"),
@@ -1071,10 +1088,14 @@ class TyperApp(ttk.Window):
         self._progress_var.set((cur / total * 100) if total > 0 else 0.0)
 
     def _on_typing_error(self, e: Exception) -> None:
+        self._typing_error = True
         self._status_label.configure(text=self.t("err_typing", e=e), bootstyle=StatusStyle.ERROR)
         self._log_append(f"ERROR: {e}")
 
     def _on_typing_done(self, stopped: bool, done: int, total: int) -> None:
+        if self._typing_error:
+            self._reset_ui()
+            return
         if stopped:
             self._log_append(self.t("log_stopped", chars=done, total=total))
             self._status_label.configure(text=self.t("status_stopped"),

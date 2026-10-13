@@ -13,13 +13,14 @@ def main() -> None:
         if not args.file:
             print("Error: --headless requires --file.")
             sys.exit(1)
-        run_headless(args.file, args.interval, args.wait)
+        run_headless(args.file, args.interval, args.wait, args.keyboard_layout)
     else:
         app = TyperApp(
             lang=args.lang,
             initial_file=args.file,
             interval_ms=int(args.interval),
             wait_s=args.wait,
+            keyboard_layout=args.keyboard_layout,
         )
         app.mainloop()
 

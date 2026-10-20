@@ -10,14 +10,16 @@ import ttkbootstrap as ttk
 from ttkbootstrap.widgets.scrolled import ScrolledText
 
 from .config import (TRANSLATIONS, SPEED_PROFILES, StatusStyle,
-                     platform_mono_font, AI_MODEL, AI_FALLBACK_MODELS, ModelInfo)
+                     platform_mono_font, ModelInfo,
+                     is_safe_ai_output, normalize_ai_output)
 from .markers import parse_instructions
 from .engine import TypingEngine, TypingCallbacks
 from .drivers import normalize_evdev_layout
 from . import ai
 from .ai import AIGenerator, AICallbacks
 from . import vault
-from .vault import BitwardenVault, VaultCallbacks, VaultItem
+from .vault import (BitwardenVault, VaultCallbacks, VaultItem, is_current_vault_epoch,
+                    is_missing_totp_error)
 
 
 class CollapsibleFrame(ttk.Frame):
@@ -75,9 +77,15 @@ class TyperApp(ttk.Window):
         self._ai     = AIGenerator()
         self._vault  = BitwardenVault()
         self._bw_items: list[VaultItem] = []
-        # Static fallback until _refresh_ai_models_async() replaces it with the
-        # live list from the Models API (see ai.list_models()).
-        self._ai_models: list[ModelInfo] = list(AI_FALLBACK_MODELS)
+        self._bw_epoch = 0
+        self._ai_models: list[ModelInfo] = []
+        self._ai_selected_model_id: str | None = None
+        self._ai_preview = ""
+        self._ai_generation_id = 0
+        self._ai_cancelling = False
+        self._ai_provider_statuses = {}
+        self._ai_provider_probe_ids = {}
+        self._ai_pending_generate = None
 
         self.geometry("820x660")
         self.minsize(width=410, height=460)
@@ -107,6 +115,8 @@ class TyperApp(ttk.Window):
 
     def _on_close(self) -> None:
         """Lock the vault and release engine driver before closing."""
+        if self._ai.is_generating:
+            self._ai.cancel()
         if self._vault.is_unlocked:
             self._vault.lock()
         self._engine.close()
@@ -227,37 +237,68 @@ class TyperApp(ttk.Window):
         af.columnconfigure(0, weight=1)
 
         self._lbl_ai = ttk.Label(af, text=self.t("ai_prompt_label"))
-        self._lbl_ai.grid(row=0, column=0, columnspan=4,
+        self._lbl_ai.grid(row=0, column=0, columnspan=6,
                           padx=15, pady=(8, 2), sticky="w")
 
-        self._ai_entry = ttk.Entry(af)
-        self._ai_entry.grid(row=1, column=0, padx=(15, 5), pady=(0, 4), sticky="ew")
-        self._ai_entry.bind("<Return>", lambda _e: self.generate_with_ai())
+        self._lbl_ai_provider = ttk.Label(af, text=self.t("ai_provider_label"))
+        self._lbl_ai_provider.grid(row=1, column=0, padx=(15, 3), pady=(0, 4), sticky="w")
+        self._ai_provider_var = ttk.StringVar(value=ai.Provider.CODEX.value)
+        self._ai_provider_display = ttk.StringVar(value=self._provider_display(ai.Provider.CODEX))
+        self._ai_provider_combo = ttk.Combobox(
+            af, textvariable=self._ai_provider_display,
+            values=[self._provider_display(provider) for provider in ai.Provider],
+            state="readonly", width=15, bootstyle="secondary")
+        self._ai_provider_combo.grid(row=1, column=1, padx=(0, 5), pady=(0, 4), sticky="w")
+        self._ai_provider_combo.bind("<<ComboboxSelected>>", self._on_ai_provider_change)
 
-        self._ai_model_var = ttk.StringVar(value=self._model_display(AI_MODEL))
+        self._lbl_ai_model = ttk.Label(af, text=self.t("ai_model_label"))
+        self._lbl_ai_model.grid(row=1, column=2, padx=(5, 3), pady=(0, 4), sticky="w")
+        self._ai_model_var = ttk.StringVar(value="")
         self._ai_model_combo = ttk.Combobox(af, textvariable=self._ai_model_var,
                                             values=[m.display_name for m in self._ai_models],
-                                            state="readonly", width=12,
+                                            state="readonly", width=16,
                                             bootstyle="secondary")
-        self._ai_model_combo.grid(row=1, column=1, padx=5, pady=(0, 4))
-        self._ai_model_combo.bind("<<ComboboxSelected>>",
-                                  lambda _e: self._update_effort_options())
+        self._ai_model_combo.grid(row=1, column=3, padx=(0, 5), pady=(0, 4), sticky="w")
+        self._ai_model_combo.bind("<<ComboboxSelected>>", self._on_ai_model_change)
 
+        self._lbl_ai_effort = ttk.Label(af, text=self.t("ai_effort_label"))
+        self._lbl_ai_effort.grid(row=1, column=4, padx=(5, 3), pady=(0, 4), sticky="w")
         self._effort_var = ttk.StringVar(value="")
         self._ai_effort_combo = ttk.Combobox(af, textvariable=self._effort_var,
                                              state="readonly", width=8,
                                              bootstyle="secondary")
-        self._ai_effort_combo.grid(row=1, column=2, padx=5, pady=(0, 4))
+        self._ai_effort_combo.grid(row=1, column=5, padx=(0, 15), pady=(0, 4), sticky="w")
         self._update_effort_options()
 
+        self._ai_entry = ttk.Entry(af)
+        self._ai_entry.grid(row=2, column=0, columnspan=4, padx=(15, 5), pady=(0, 4), sticky="ew")
+        self._ai_entry.bind("<Return>", lambda _e: self.generate_with_ai())
         self._btn_ai = ttk.Button(af, text=self.t("ai_generate_btn"), width=14,
                                   command=self.generate_with_ai, bootstyle="primary")
-        self._btn_ai.grid(row=1, column=3, padx=(5, 15), pady=(0, 4), sticky="e")
+        self._btn_ai.grid(row=2, column=4, padx=(5, 3), pady=(0, 4), sticky="e")
+        self._btn_ai_cancel = ttk.Button(af, text=self.t("ai_cancel_btn"), width=10,
+                                         command=self.cancel_ai_generation,
+                                         bootstyle="warning-outline", state="disabled")
+        self._btn_ai_cancel.grid(row=2, column=5, padx=(3, 15), pady=(0, 4), sticky="e")
 
         self._lbl_ai_hint = ttk.Label(af, text=self.t("ai_hint"),
                                       font=("", 9), bootstyle="secondary")
-        self._lbl_ai_hint.grid(row=2, column=0, columnspan=4,
-                               padx=15, pady=(0, 8), sticky="w")
+        self._lbl_ai_hint.grid(row=3, column=0, columnspan=6,
+                               padx=15, pady=(0, 2), sticky="w")
+        self._lbl_ai_preview = ttk.Label(af, text=self.t("ai_preview_label"),
+                                         font=("", 9), bootstyle="secondary")
+        self._lbl_ai_preview.grid(row=4, column=0, columnspan=6,
+                                  padx=15, pady=(0, 2), sticky="w")
+        self._ai_preview_text = ScrolledText(af, height=5, width=100,
+                                             font=platform_mono_font())
+        self._ai_preview_text.grid(row=5, column=0, columnspan=6,
+                                   padx=15, pady=(0, 4), sticky="ew")
+        self._ai_preview_text.text.configure(state="disabled")
+        self._btn_ai_apply = ttk.Button(af, text=self.t("ai_apply_btn"), width=28,
+                                        command=self.apply_ai_preview,
+                                        bootstyle="success-outline", state="disabled")
+        self._btn_ai_apply.grid(row=6, column=5, padx=(5, 15), pady=(0, 8), sticky="e")
+        self._set_ai_controls_enabled(True)
 
     def _build_bw_panel(self) -> None:
         section = CollapsibleFrame(self, text=self.t("bw_title"),
@@ -267,52 +308,80 @@ class TyperApp(ttk.Window):
         bf = section.body
         bf.columnconfigure(1, weight=1)
 
-        # Row 0 ── Master password | Unlock | Lock
+        # Row 0 ── Email
+        self._lbl_bw_email = ttk.Label(bf, text=self.t("bw_email_label"))
+        self._lbl_bw_email.grid(row=0, column=0, padx=(15, 5), pady=(8, 4), sticky="w")
+
+        self._bw_email_entry = ttk.Entry(bf)
+        self._bw_email_entry.grid(row=0, column=1, columnspan=3, padx=(5, 15), pady=(8, 4), sticky="ew")
+
+        # Row 1 ── Master password | Authenticate | Lock
         self._lbl_bw_pw = ttk.Label(bf, text=self.t("bw_pw_label"))
-        self._lbl_bw_pw.grid(row=0, column=0, padx=(15, 5), pady=(8, 4), sticky="w")
+        self._lbl_bw_pw.grid(row=1, column=0, padx=(15, 5), pady=4, sticky="w")
 
         self._bw_pw_entry = ttk.Entry(bf, show="•")
-        self._bw_pw_entry.grid(row=0, column=1, padx=5, pady=(8, 4), sticky="ew")
+        self._bw_pw_entry.grid(row=1, column=1, padx=5, pady=4, sticky="ew")
         self._bw_pw_entry.bind("<Return>", lambda _e: self.bw_unlock())
 
         self._btn_bw_unlock = ttk.Button(bf, text=self.t("bw_unlock_btn"), width=15,
                                          command=self.bw_unlock, bootstyle="warning")
-        self._btn_bw_unlock.grid(row=0, column=2, padx=5, pady=(8, 4))
+        self._btn_bw_unlock.grid(row=1, column=2, padx=5, pady=4)
 
         self._btn_bw_lock = ttk.Button(bf, text=self.t("bw_lock_btn"), width=13,
                                        command=self.bw_lock,
                                        bootstyle="warning-outline", state="disabled")
-        self._btn_bw_lock.grid(row=0, column=3, padx=(5, 15), pady=(8, 4))
+        self._btn_bw_lock.grid(row=1, column=3, padx=(5, 15), pady=4)
 
-        # Row 1 ── Search credential | Search
+        # Row 2 ── Search credential | Search
         self._lbl_bw_search = ttk.Label(bf, text=self.t("bw_search_label"))
-        self._lbl_bw_search.grid(row=1, column=0, padx=(15, 5), pady=4, sticky="w")
+        self._lbl_bw_search.grid(row=2, column=0, padx=(15, 5), pady=4, sticky="w")
 
         self._bw_search_entry = ttk.Entry(bf, state="disabled")
-        self._bw_search_entry.grid(row=1, column=1, padx=5, pady=4, sticky="ew")
+        self._bw_search_entry.grid(row=2, column=1, padx=5, pady=4, sticky="ew")
         self._bw_search_entry.bind("<Return>", lambda _e: self.bw_search())
 
         self._btn_bw_search = ttk.Button(bf, text=self.t("bw_search_btn"), width=15,
                                          command=self.bw_search,
                                          bootstyle="secondary", state="disabled")
-        self._btn_bw_search.grid(row=1, column=2, padx=5, pady=4)
+        self._btn_bw_search.grid(row=2, column=2, padx=5, pady=4)
 
-        # Row 2 ── Results combobox | Type password
+        # Row 3 ── Results combobox | Type password | Show OTP
         self._bw_item_var = ttk.StringVar(value="")
         self._bw_item_combo = ttk.Combobox(bf, textvariable=self._bw_item_var,
                                            state="disabled", bootstyle="secondary")
-        self._bw_item_combo.grid(row=2, column=0, columnspan=2,
+        self._bw_item_combo.grid(row=3, column=0, columnspan=2,
                                  padx=(15, 5), pady=4, sticky="ew")
+        self._bw_item_combo.bind("<<ComboboxSelected>>", self._bw_on_item_selected)
 
         self._btn_bw_type = ttk.Button(bf, text=self.t("bw_type_btn"), width=15,
                                        command=self.bw_type_password,
                                        bootstyle="warning", state="disabled")
-        self._btn_bw_type.grid(row=2, column=2, columnspan=2,
-                               padx=5, pady=4, sticky="e")
+        self._btn_bw_type.grid(row=3, column=2, padx=5, pady=4)
+
+        self._btn_bw_totp = ttk.Button(bf, text=self.t("bw_totp_btn"), width=15,
+                                       command=self.bw_show_totp,
+                                       bootstyle="secondary", state="disabled")
+        self._btn_bw_totp.grid(row=3, column=3, padx=(5, 15), pady=4)
+
+        self._btn_bw_passkey = ttk.Button(bf, text=self.t("bw_passkey_btn"), width=24,
+                                          command=self.bw_show_passkey_details,
+                                          bootstyle="secondary", state="disabled")
+        self._btn_bw_passkey.grid(row=4, column=0, columnspan=4, padx=15, pady=(0, 2), sticky="w")
+
+        self._lbl_bw_passkey_details = ttk.Label(
+            bf, text=self.t("bw_passkey_details_none"), font=("", 9),
+            bootstyle="secondary", justify="left", wraplength=760)
+        self._lbl_bw_passkey_details.grid(row=5, column=0, columnspan=4,
+                                          padx=15, pady=(0, 2), sticky="w")
+
+        self._lbl_bw_metadata = ttk.Label(bf, text=self.t("bw_metadata_none"),
+                                          font=("", 9), bootstyle="secondary")
+        self._lbl_bw_metadata.grid(row=6, column=0, columnspan=4,
+                                   padx=15, pady=(0, 2), sticky="w")
 
         self._lbl_bw_hint = ttk.Label(bf, text=self.t("bw_hint"),
                                       font=("", 9), bootstyle="secondary")
-        self._lbl_bw_hint.grid(row=3, column=0, columnspan=4,
+        self._lbl_bw_hint.grid(row=7, column=0, columnspan=4,
                                padx=15, pady=(0, 8), sticky="w")
 
     # -----------------------------------------------------------------------
@@ -325,6 +394,7 @@ class TyperApp(ttk.Window):
         self._btn_bw_search.configure(state=state)
         self._btn_bw_lock.configure(state=state)
         self._btn_bw_unlock.configure(state="disabled" if unlocked else "normal")
+        self._bw_email_entry.configure(state="disabled" if unlocked else "normal")
         self._bw_pw_entry.configure(state="disabled" if unlocked else "normal")
         if unlocked:
             self._bw_pw_entry.delete(0, "end")   # don't keep the master password around
@@ -333,12 +403,20 @@ class TyperApp(ttk.Window):
             self._bw_item_combo.configure(values=[], state="disabled")
             self._bw_item_var.set("")
             self._btn_bw_type.configure(state="disabled")
+            self._btn_bw_totp.configure(state="disabled")
+            self._btn_bw_passkey.configure(state="disabled")
+            self._lbl_bw_metadata.configure(text=self.t("bw_metadata_none"))
+            self._lbl_bw_passkey_details.configure(text=self.t("bw_passkey_details_none"))
 
     def bw_unlock(self) -> None:
         if self._vault.is_busy or self._engine.is_typing:
             return
         if not vault.is_available():
             self.update_status(self.t("bw_err_lib"), StatusStyle.ERROR)
+            return
+        email = self._bw_email_entry.get().strip()
+        if not email:
+            self.update_status(self.t("bw_err_empty_email"), StatusStyle.ERROR)
             return
         password = self._bw_pw_entry.get()
         if not password:
@@ -351,14 +429,16 @@ class TyperApp(ttk.Window):
             on_unlocked=lambda: self.after(0, self._bw_on_unlocked),
             on_error=lambda e: self.after(0, lambda e=e: self._bw_on_error(e)),
         )
-        self._vault.unlock(password, callbacks)
+        self._vault.unlock(email, password, callbacks)
 
     def _bw_on_unlocked(self) -> None:
+        self._bw_epoch += 1
         self._bw_set_unlocked_ui(True)
         self._log_append(self.t("bw_unlocked"))
         self.update_status(self.t("bw_unlocked"), StatusStyle.SUCCESS)
 
     def bw_lock(self) -> None:
+        self._bw_epoch += 1
         self._vault.lock()
         self._bw_set_unlocked_ui(False)
         self._log_append(self.t("bw_locked"))
@@ -376,17 +456,59 @@ class TyperApp(ttk.Window):
             return
 
         self._btn_bw_search.configure(state="disabled")
+        self._bw_clear_sensitive_display()
         self.update_status(self.t("bw_searching"), StatusStyle.WARNING)
+        epoch = self._bw_epoch
         callbacks = VaultCallbacks(
-            on_items=lambda items: self.after(0, lambda i=items: self._bw_on_items(i)),
-            on_error=lambda e: self.after(0, lambda e=e: self._bw_on_error(e)),
+            on_items=lambda items: self.after(
+                0, lambda i=items: self._bw_on_items(i, epoch)),
+            on_error=lambda e: self.after(
+                0, lambda error=e: self._bw_on_search_error(epoch, error)),
         )
         self._vault.search(query, callbacks)
 
     def _bw_item_label(self, item: VaultItem) -> str:
-        return f"{item.name} ({item.username})" if item.username else item.name
+        label = f"{item.name} ({item.username})" if item.username else item.name
+        return f"{label} · {self.t('bw_passkeys', n=item.passkey_count)}" if item.passkey_count else label
 
-    def _bw_on_items(self, items: list[VaultItem]) -> None:
+    def _bw_selected_item(self) -> VaultItem | None:
+        idx = self._bw_item_combo.current()
+        return self._bw_items[idx] if 0 <= idx < len(self._bw_items) else None
+
+    def _bw_clear_sensitive_display(self) -> None:
+        self._lbl_bw_metadata.configure(text=self.t("bw_metadata_none"))
+
+    def _bw_clear_passkey_details(self) -> None:
+        self._lbl_bw_passkey_details.configure(text=self.t("bw_passkey_details_none"))
+
+    def _bw_update_selected_item_ui(self) -> None:
+        item = self._bw_selected_item()
+        self._bw_clear_sensitive_display()
+        self._bw_clear_passkey_details()
+        self._btn_bw_type.configure(state="normal" if item and item.has_password else "disabled")
+        # `bw list items` may omit login.totp although `bw get totp` works.
+        self._btn_bw_totp.configure(state="normal" if item else "disabled")
+        self._btn_bw_passkey.configure(state="normal" if item and item.passkey_count else "disabled")
+        if item and item.passkey_count:
+            self._lbl_bw_metadata.configure(
+                text=self.t("bw_passkeys", n=item.passkey_count))
+
+    def _bw_on_item_selected(self, _event=None) -> None:
+        self._bw_update_selected_item_ui()
+
+    def _bw_response_is_current(self, item_id: str, epoch: int) -> bool:
+        """Reject a queued vault response after a lock, re-unlock, or selection change."""
+        item = self._bw_selected_item()
+        return bool(is_current_vault_epoch(self._vault.is_unlocked, self._bw_epoch, epoch) and item
+                    and item.id == item_id)
+
+    def _bw_on_search_error(self, epoch: int, error: Exception) -> None:
+        if is_current_vault_epoch(self._vault.is_unlocked, self._bw_epoch, epoch):
+            self._bw_on_error(error)
+
+    def _bw_on_items(self, items: list[VaultItem], epoch: int) -> None:
+        if not is_current_vault_epoch(self._vault.is_unlocked, self._bw_epoch, epoch):
+            return
         self._btn_bw_search.configure(state="normal")
         self._bw_items = items
         labels = [self._bw_item_label(i) for i in items]
@@ -394,32 +516,130 @@ class TyperApp(ttk.Window):
                                       state="readonly" if labels else "disabled")
         if labels:
             self._bw_item_var.set(labels[0])
-            self._btn_bw_type.configure(state="normal")
+            self._bw_item_combo.current(0)
+            self._bw_update_selected_item_ui()
             self.update_status(self.t("bw_found", n=len(items)), StatusStyle.SUCCESS)
         else:
             self._bw_item_var.set("")
             self._btn_bw_type.configure(state="disabled")
+            self._btn_bw_totp.configure(state="disabled")
+            self._btn_bw_passkey.configure(state="disabled")
+            self._bw_clear_sensitive_display()
+            self._bw_clear_passkey_details()
             self.update_status(self.t("bw_none"), StatusStyle.WARNING)
 
     def bw_type_password(self) -> None:
         if self._vault.is_busy or self._engine.is_typing:
             return
-        idx = self._bw_item_combo.current()
-        if idx < 0 or idx >= len(self._bw_items):
+        item = self._bw_selected_item()
+        if not item or not item.has_password:
             self.update_status(self.t("bw_err_no_sel"), StatusStyle.ERROR)
             return
 
         self._btn_bw_type.configure(state="disabled")
         self.update_status(self.t("bw_fetching"), StatusStyle.WARNING)
+        item_id, epoch = item.id, self._bw_epoch
         callbacks = VaultCallbacks(
-            on_password=lambda pw: self.after(0, lambda p=pw: self._bw_on_password(p)),
-            on_error=lambda e: self.after(0, lambda e=e: self._bw_on_error(e)),
+            on_password=lambda pw: self.after(
+                0, lambda p=pw: self._bw_on_password(item_id, epoch, p)),
+            on_error=lambda e: self.after(
+                0, lambda error=e: self._bw_on_request_error(item_id, epoch, error)),
         )
-        self._vault.get_password(self._bw_items[idx].id, callbacks)
+        self._vault.get_password(item_id, callbacks)
 
-    def _bw_on_password(self, password: str) -> None:
+    def bw_show_totp(self) -> None:
+        """Request and display a current OTP without logging or persisting it."""
+        if self._vault.is_busy or self._engine.is_typing:
+            self.update_status(self.t("bw_busy"), StatusStyle.WARNING)
+            return
+        item = self._bw_selected_item()
+        if not item:
+            self.update_status(self.t("bw_err_no_sel"), StatusStyle.ERROR)
+            return
+
+        self._btn_bw_totp.configure(state="disabled")
+        self._bw_clear_sensitive_display()
+        self.update_status(self.t("bw_fetching_totp"), StatusStyle.WARNING)
+        item_id, epoch = item.id, self._bw_epoch
+        callbacks = VaultCallbacks(
+            on_totp=lambda code: self.after(
+                0, lambda c=code: self._bw_on_totp(item_id, epoch, c)),
+            on_error=lambda e: self.after(
+                0, lambda error=e: self._bw_on_totp_error(item_id, epoch, error)),
+        )
+        self._vault.get_totp(item_id, callbacks)
+
+    def _bw_on_request_error(self, item_id: str, epoch: int, error: Exception) -> None:
+        if self._bw_response_is_current(item_id, epoch):
+            self._bw_on_error(error)
+
+    def _bw_on_totp_error(self, item_id: str, epoch: int, error: Exception) -> None:
+        if not self._bw_response_is_current(item_id, epoch):
+            return
+        if is_missing_totp_error(error):
+            self._bw_update_selected_item_ui()
+            self.update_status(self.t("bw_err_no_totp"), StatusStyle.ERROR)
+            return
+        self._bw_on_error(error)
+
+    def _bw_on_totp(self, item_id: str, epoch: int, code: str) -> None:
+        if not self._bw_response_is_current(item_id, epoch):
+            return
+        self._bw_update_selected_item_ui()
+        if not code:
+            self.update_status(self.t("bw_err_no_totp"), StatusStyle.ERROR)
+            return
+        # This short-lived code is intentionally only shown on explicit request.
+        self._lbl_bw_metadata.configure(text=self.t("bw_totp_value", code=code))
+        self.update_status(self.t("bw_totp_ready"), StatusStyle.SUCCESS)
+
+    def bw_show_passkey_details(self) -> None:
+        """Show only allowlisted metadata for the selected credential's passkey."""
+        if self._vault.is_busy or self._engine.is_typing:
+            return
+        item = self._bw_selected_item()
+        if not item or not item.passkey_count:
+            self.update_status(self.t("bw_err_no_passkey"), StatusStyle.ERROR)
+            return
+
+        self._btn_bw_passkey.configure(state="disabled")
+        self._bw_clear_passkey_details()
+        self.update_status(self.t("bw_fetching_passkey"), StatusStyle.WARNING)
+        item_id, epoch = item.id, self._bw_epoch
+        callbacks = VaultCallbacks(
+            on_passkey_details=lambda details: self.after(
+                0, lambda d=details: self._bw_on_passkey_details(item_id, epoch, d)),
+            on_error=lambda e: self.after(
+                0, lambda error=e: self._bw_on_request_error(item_id, epoch, error)),
+        )
+        self._vault.get_passkey_details(item_id, callbacks)
+
+    def _bw_on_passkey_details(self, item_id: str, epoch: int, details) -> None:
+        if not self._bw_response_is_current(item_id, epoch):
+            return
+        self._bw_update_selected_item_ui()
+        if not details:
+            self._bw_on_error(RuntimeError("no passkey details"))
+            return
+        lines = [self.t("bw_passkey_details_title")]
+        for number, detail in enumerate(details, start=1):
+            parts = [f"{self.t('bw_passkey_number', n=number)}"]
+            if detail.credential_id:
+                parts.append(self.t("bw_passkey_credential_id", value=detail.credential_id))
+            if detail.rp_id:
+                parts.append(self.t("bw_passkey_rp_id", value=detail.rp_id))
+            if detail.user_handle:
+                parts.append(self.t("bw_passkey_user_handle", value=detail.user_handle))
+            parts.extend(f"{label}: {value}" for label, value in detail.metadata)
+            lines.append(" · ".join(parts))
+        self._lbl_bw_passkey_details.configure(text="\n".join(lines))
+        self.update_status(self.t("bw_passkey_ready"), StatusStyle.SUCCESS)
+
+    def _bw_on_password(self, item_id: str, epoch: int, password: str) -> None:
         """Type the fetched password straight into the focused window — it never
         enters the editor or the log. Honors the configured wait + interval."""
+        if not self._bw_response_is_current(item_id, epoch):
+            return
         self._btn_bw_type.configure(state="normal")
         if not password:
             self._bw_on_error(RuntimeError("empty password"))
@@ -477,35 +697,58 @@ class TyperApp(ttk.Window):
             state="disabled" if self._vault.is_unlocked else "normal")
         if self._vault.is_unlocked:
             self._btn_bw_search.configure(state="normal")
-            if self._bw_items:
-                self._btn_bw_type.configure(state="normal")
-        if isinstance(e, vault.VaultLoggedOutError):
+            self._bw_update_selected_item_ui()
+        if isinstance(e, vault.VaultTwoFactorError):
+            self.update_status(self.t("bw_err_2fa"), StatusStyle.ERROR)
+        elif isinstance(e, vault.VaultDeviceVerificationError):
+            self.update_status(self.t("bw_err_device_verification"), StatusStyle.ERROR)
+        elif isinstance(e, vault.VaultLoggedInIdentityError):
+            self.update_status(self.t("bw_err_identity"), StatusStyle.ERROR)
+        elif isinstance(e, vault.VaultLoggedOutError):
             self.update_status(self.t("bw_err_login"), StatusStyle.ERROR)
         else:
             self.update_status(self.t("bw_err_api", e=e), StatusStyle.ERROR)
         self._log_append(f"BITWARDEN ERROR: {e}")
 
     # -----------------------------------------------------------------------
-    # AI model list (fetched live from the Models API; see ai.list_models())
+    # AI providers and models (local discovery only; no credentials leave app)
     # -----------------------------------------------------------------------
-    def _model_display(self, model_id: str) -> str:
+    @staticmethod
+    def _provider_display(provider) -> str:
+        return {
+            ai.Provider.CODEX: "ChatGPT (Codex)",
+            ai.Provider.CLAUDE: "Claude",
+            ai.Provider.GOOGLE: "Google (Antigravity)",
+        }[provider]
+
+    def _selected_provider(self):
+        return ai.Provider(self._ai_provider_var.get())
+
+    def _set_selected_provider(self, provider) -> None:
+        self._ai_provider_var.set(provider.value)
+        self._ai_provider_display.set(self._provider_display(provider))
+
+    def _model_display(self, model_id: str | None) -> str:
+        if model_id is None:
+            return ""
         return next((m.display_name for m in self._ai_models if m.id == model_id), model_id)
 
-    def _selected_model_info(self) -> ModelInfo:
-        name = self._ai_model_var.get()
+    def _selected_model_info(self) -> ModelInfo | None:
         for info in self._ai_models:
-            if info.display_name == name:
+            if info.id == self._ai_selected_model_id:
                 return info
-        return self._ai_models[0] if self._ai_models else ModelInfo(AI_MODEL, AI_MODEL, False, ())
+        return None
 
-    def _selected_model(self) -> str:
-        return self._selected_model_info().id
+    def _selected_model(self) -> str | None:
+        info = self._selected_model_info()
+        return info.id if info else None
 
     def _selected_effort(self) -> str | None:
         return self._effort_var.get() or None
 
     def _update_effort_options(self, _event=None) -> None:
-        levels = list(self._selected_model_info().effort_levels)
+        info = self._selected_model_info()
+        levels = list(info.effort_levels) if info else []
         self._ai_effort_combo.configure(values=levels)
         if levels:
             if self._effort_var.get() not in levels:
@@ -516,33 +759,98 @@ class TyperApp(ttk.Window):
             self._ai_effort_combo.configure(state="disabled")
 
     def _refresh_ai_models_async(self) -> None:
-        """Replace the static fallback with the live model list, in the
-        background so a slow/unreachable API can't delay window startup."""
-        if not ai.is_available() or not ai.has_credentials():
-            return  # nothing to fetch from; keep the fallback list
+        """Refresh provider-local status and only its supported models."""
+        self._refresh_ai_provider()
+
+    def _on_ai_provider_change(self, _event=None) -> None:
+        display = self._ai_provider_display.get()
+        provider = next(
+            provider for provider in ai.Provider
+            if self._provider_display(provider) == display)
+        self._set_selected_provider(provider)
+        self._ai_pending_generate = None
+        self._invalidate_ai_preview()
+        self._refresh_ai_provider()
+
+    def _on_ai_model_change(self, _event=None) -> None:
+        display = self._ai_model_var.get()
+        selected = next((model for model in self._ai_models
+                         if model.display_name == display), None)
+        if selected:
+            self._ai_selected_model_id = selected.id
+        self._invalidate_ai_preview()
+        self._update_effort_options()
+
+    def _refresh_ai_provider(self, pending_prompt: str | None = None) -> None:
+        provider = self._selected_provider()
+        model = self._selected_model_info() if pending_prompt is not None else None
+        effort = self._selected_effort() if pending_prompt is not None else None
+        self._apply_fetched_models([])
+        probe_id = self._ai_provider_probe_ids.get(provider, 0) + 1
+        self._ai_provider_probe_ids[provider] = probe_id
+        if pending_prompt is not None:
+            self._ai_pending_generate = (
+                provider, probe_id, pending_prompt, model.id if model else None,
+                effort,
+            )
 
         def worker() -> None:
+            status = ai.provider_status(provider)
             try:
-                models = ai.list_models()
-            except Exception:
-                return  # offline, auth hiccup, etc. — keep the fallback list
-            if models:
-                self.after(0, lambda: self._apply_fetched_models(models))
+                self.after(0, lambda: self._apply_ai_provider_status(provider, probe_id, status))
+            except TclError:
+                pass  # The window closed while its local CLI probe was running.
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _apply_ai_provider_status(self, provider, probe_id: int, status) -> None:
+        if self._ai_provider_probe_ids.get(provider) != probe_id:
+            return
+        self._ai_provider_statuses[provider] = status
+        if provider != self._selected_provider():
+            return
+        self._apply_fetched_models(ai.models_for(provider, status))
+        name = self._provider_display(provider)
+        if not getattr(status, "safe", True):
+            message, style = self.t("ai_provider_unsafe", provider=name), StatusStyle.WARNING
+        elif not status.installed:
+            message, style = self.t("ai_provider_unavailable", provider=name), StatusStyle.WARNING
+        elif not status.authenticated:
+            message, style = self.t("ai_provider_unauthenticated", provider=name), StatusStyle.WARNING
+        elif not status.available:
+            message, style = self.t("ai_provider_unavailable", provider=name), StatusStyle.WARNING
+        else:
+            message, style = self.t("ai_provider_ready", provider=name), StatusStyle.IDLE
+        self.update_status(message, style)
+        pending = self._ai_pending_generate
+        if pending and pending[:2] == (provider, probe_id):
+            self._ai_pending_generate = None
+            _provider, _probe, prompt, model_id, effort = pending
+            if status.safe and status.available and status.authenticated:
+                info = next(
+                    (item for item in self._ai_models if item.id == model_id),
+                    self._ai_models[0] if self._ai_models else None,
+                )
+                if info:
+                    self._start_ai_generation(prompt, provider, info, effort)
+
     def _apply_fetched_models(self, models: list[ModelInfo]) -> None:
-        current_id = self._selected_model()
         self._ai_models = models
         display_names = [m.display_name for m in models]
         self._ai_model_combo.configure(values=display_names)
-        ids = [m.id for m in models]
-        self._ai_model_var.set(
-            self._model_display(current_id) if current_id in ids else display_names[0])
+        ids = {m.id for m in models}
+        self._ai_selected_model_id = (
+            self._ai_selected_model_id if self._ai_selected_model_id in ids
+            else (models[0].id if models else None))
+        self._ai_model_var.set(self._model_display(self._ai_selected_model_id))
         self._update_effort_options()
+        if not self._ai.is_generating:
+            self._btn_ai.configure(state="normal" if models else "disabled")
 
     def _set_ai_controls_enabled(self, enabled: bool) -> None:
-        self._ai_model_combo.configure(state="readonly" if enabled else "disabled")
+        self._ai_provider_combo.configure(state="readonly" if enabled else "disabled")
+        self._ai_model_combo.configure(
+            state="readonly" if enabled and self._ai_models else "disabled")
         if enabled:
             self._update_effort_options()   # restores values + enabled state
         else:
@@ -853,18 +1161,28 @@ class TyperApp(ttk.Window):
         self._lbl_marker_hint.configure(text=self.t("marker_hint"))
         self._af.set_title(self.t("ai_title"))
         self._lbl_ai.configure(text=self.t("ai_prompt_label"))
+        self._lbl_ai_provider.configure(text=self.t("ai_provider_label"))
+        self._lbl_ai_model.configure(text=self.t("ai_model_label"))
+        self._lbl_ai_effort.configure(text=self.t("ai_effort_label"))
         self._lbl_ai_hint.configure(text=self.t("ai_hint"))
+        self._lbl_ai_preview.configure(text=self.t("ai_preview_label"))
+        self._btn_ai_cancel.configure(text=self.t("ai_cancel_btn"))
+        self._btn_ai_apply.configure(text=self.t("ai_apply_btn"))
         if not self._ai.is_generating:
             self._btn_ai.configure(text=self.t("ai_generate_btn"))
 
         self._bf.set_title(self.t("bw_title"))
+        self._lbl_bw_email.configure(text=self.t("bw_email_label"))
         self._lbl_bw_pw.configure(text=self.t("bw_pw_label"))
         self._btn_bw_unlock.configure(text=self.t("bw_unlock_btn"))
         self._btn_bw_lock.configure(text=self.t("bw_lock_btn"))
         self._lbl_bw_search.configure(text=self.t("bw_search_label"))
         self._btn_bw_search.configure(text=self.t("bw_search_btn"))
         self._btn_bw_type.configure(text=self.t("bw_type_btn"))
+        self._btn_bw_totp.configure(text=self.t("bw_totp_btn"))
+        self._btn_bw_passkey.configure(text=self.t("bw_passkey_btn"))
         self._lbl_bw_hint.configure(text=self.t("bw_hint"))
+        self._bw_update_selected_item_ui()
         self._log_frame.set_title(self.t("log_title"))
         self._status_label.configure(text=self.t("status_ready"))
 
@@ -1079,7 +1397,7 @@ class TyperApp(ttk.Window):
         self._engine.start(text, wait_s, interval_s, chunk_mode, callbacks)
 
     # -----------------------------------------------------------------------
-    # AI generation (Anthropic Claude)
+    # AI generation: preview first; inserting into the typing editor is explicit.
     # -----------------------------------------------------------------------
     def generate_with_ai(self) -> None:
         # --- Read the prompt in the main thread, then hand off to a worker ---
@@ -1090,59 +1408,129 @@ class TyperApp(ttk.Window):
         if not prompt:
             self.update_status(self.t("ai_err_empty"), StatusStyle.ERROR)
             return
-        if not ai.is_available():
-            self.update_status(self.t("ai_err_lib"), StatusStyle.ERROR)
-            return
-        if not ai.has_credentials():
-            self.update_status(self.t("ai_err_auth"), StatusStyle.ERROR)
+        # Authentication can change outside the app. Always probe asynchronously
+        # rather than trusting a cached negative result or blocking the Tk loop.
+        self.update_status(self.t("ai_checking"), StatusStyle.WARNING)
+        self._refresh_ai_provider(pending_prompt=prompt)
+
+    def _start_ai_generation(self, prompt: str, provider, info: ModelInfo,
+                             effort: str | None) -> None:
+        if self._engine.is_typing or self._ai.is_generating:
             return
 
+        self._invalidate_ai_preview()
+        self._ai_generation_id += 1
+        generation_id = self._ai_generation_id
+        self._ai_cancelling = False
         self._btn_ai.configure(state="disabled", text=self.t("ai_generating_btn"))
+        self._btn_ai_cancel.configure(state="normal")
         self._set_ai_controls_enabled(False)
         self._btn_action.configure(state="disabled")
         self.update_status(self.t("ai_generating"), StatusStyle.WARNING)
-        self._ai_streamed = False   # editor is cleared on the first chunk, not before
-        self._ai_target_text = self._active_text()
 
         callbacks = AICallbacks(
-            on_start=lambda: self.after(0, self._ai_on_start),
-            on_text=lambda chunk: self.after(0, lambda c=chunk: self._ai_on_text(c)),
-            on_done=lambda full: self.after(0, self._ai_on_done),
-            on_error=lambda e: self.after(0, lambda e=e: self._ai_on_error(e)),
+            on_start=lambda: self.after(0, lambda: self._ai_on_start(generation_id)),
+            on_text=lambda text: self.after(0, lambda value=text: self._ai_on_text(generation_id, value)),
+            on_done=lambda full: self.after(0, lambda value=full: self._ai_on_done(generation_id, value)),
+            on_error=lambda e: self.after(0, lambda error=e: self._ai_on_error(generation_id, error)),
         )
-        info = self._selected_model_info()
         self._ai.generate(prompt, self.lang, info.id, callbacks,
                           supports_adaptive=info.supports_adaptive,
-                          effort=self._selected_effort())
+                          effort=effort, provider=provider)
 
-    def _ai_on_start(self) -> None:
+    def cancel_ai_generation(self) -> None:
+        if self._ai_cancelling or not self._ai.cancel():
+            return
+        self._ai_cancelling = True
+        self._invalidate_ai_preview()
+        self._btn_ai_cancel.configure(state="disabled")
+        self.update_status(self.t("ai_cancelling"), StatusStyle.WARNING)
+
+    def _ai_callback_current(self, generation_id: int) -> bool:
+        return generation_id == self._ai_generation_id
+
+    def _ai_on_start(self, generation_id: int) -> None:
+        if not self._ai_callback_current(generation_id) or self._ai_cancelling:
+            return
         self._log_append(self.t("ai_generating"))
 
-    def _ai_on_text(self, chunk: str) -> None:
-        editor = self._ai_target_text
-        if not self._ai_streamed:        # clear only once real output arrives
-            editor.delete("1.0", "end")
-            self._ai_streamed = True
-        editor.insert("end", chunk)
-        editor.see("end")
+    def _ai_on_text(self, generation_id: int, text: str) -> None:
+        # The core emits this once, after it has validated the complete output.
+        if self._ai_callback_current(generation_id) and not self._ai_cancelling:
+            self._ai_preview = text
 
-    def _ai_on_done(self) -> None:
-        self._update_char_count()
+    def _ai_on_done(self, generation_id: int, full: str) -> None:
+        if not self._ai_callback_current(generation_id):
+            return
+        was_cancelling = self._ai_cancelling
+        self._ai_cancelling = False
         self._btn_ai.configure(state="normal", text=self.t("ai_generate_btn"))
+        self._btn_ai_cancel.configure(state="disabled")
         self._set_ai_controls_enabled(True)
         self._btn_action.configure(state="normal")
-        self._status_label.configure(text=self.t("ai_done"), bootstyle=StatusStyle.SUCCESS)
+        if was_cancelling:
+            self._invalidate_ai_preview()
+            self._status_label.configure(text=self.t("status_stopped"),
+                                         bootstyle=StatusStyle.WARNING)
+            return
+        if full:
+            self._set_ai_preview(full)
+            self._status_label.configure(text=self.t("ai_done"), bootstyle=StatusStyle.SUCCESS)
+        else:
+            self._invalidate_ai_preview()
+            self._status_label.configure(text=self.t("ai_err_api", e="empty response"),
+                                         bootstyle=StatusStyle.ERROR)
 
-    def _ai_on_error(self, e: Exception) -> None:
+    def _ai_on_error(self, generation_id: int, e: Exception) -> None:
+        if not self._ai_callback_current(generation_id):
+            return
+        was_cancelling = self._ai_cancelling
+        self._ai_cancelling = False
+        self._invalidate_ai_preview()
         self._btn_ai.configure(state="normal", text=self.t("ai_generate_btn"))
+        self._btn_ai_cancel.configure(state="disabled")
         self._set_ai_controls_enabled(True)
         self._btn_action.configure(state="normal")
-        if ai.is_auth_error(e):
+        if was_cancelling:
+            msg = self.t("status_stopped")
+        elif ai.is_auth_error(e):
             msg = self.t("ai_err_auth")            # bad/expired credential
         else:
             msg = self.t("ai_err_api", e=e)
         self._status_label.configure(text=msg, bootstyle=StatusStyle.ERROR)
-        self._log_append(f"AI ERROR: {e}")
+        if not was_cancelling:
+            self._log_append(f"AI ERROR: {e}")
+
+    def _set_ai_preview(self, text: str) -> None:
+        text = normalize_ai_output(text)
+        self._ai_preview = text
+        self._ai_preview_text.text.configure(state="normal")
+        self._ai_preview_text.text.delete("1.0", "end")
+        self._ai_preview_text.text.insert("1.0", text)
+        self._ai_preview_text.text.configure(state="disabled")
+        self._btn_ai_apply.configure(state="normal")
+
+    def _invalidate_ai_preview(self) -> None:
+        self._ai_preview = ""
+        if not hasattr(self, "_ai_preview_text"):
+            return
+        self._ai_preview_text.text.configure(state="normal")
+        self._ai_preview_text.text.delete("1.0", "end")
+        self._ai_preview_text.text.configure(state="disabled")
+        self._btn_ai_apply.configure(state="disabled")
+
+    def apply_ai_preview(self) -> None:
+        text = normalize_ai_output(self._ai_preview)
+        if not text or not is_safe_ai_output(text):
+            self._invalidate_ai_preview()
+            self.update_status(self.t("ai_preview_rejected"), StatusStyle.ERROR)
+            return
+        editor = self._active_text()
+        editor.text.insert("insert", text)
+        editor.text.see("insert")
+        self._invalidate_ai_preview()
+        self._update_char_count()
+        self.update_status(self.t("ai_applied"), StatusStyle.SUCCESS)
 
     def _on_chunk_done(self, cur: int, total: int) -> None:
         status = self.t("status_chunk", cur=cur, total=total)
@@ -1174,6 +1562,6 @@ class TyperApp(ttk.Window):
         self._btn_action.configure(state="normal", text=self.t("start_btn"),
                                    bootstyle="success", command=self.start_typing_thread)
         self._btn_pause.configure(state="disabled", text=self.t("pause_btn"))
-        self._btn_ai.configure(state="normal")
+        self._btn_ai.configure(state="normal" if self._ai_models else "disabled")
         self._set_ai_controls_enabled(True)
         self._set_keyboard_layout_enabled(True)

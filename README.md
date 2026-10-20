@@ -9,9 +9,9 @@ AutoTyper é uma ferramenta de desktop desenvolvida em Python que simula digita�
 | Funcionalidade | Descrição |
 | --- | --- |
 | Digitação automatizada | Digita qualquer texto em qualquer campo ou janela ativa |
-| **Assistente IA** | Descreva em linguagem natural e a IA (Claude) gera o texto/comandos a digitar, opcionalmente com marcadores de automação |
-| **Seletor de modelo** | Escolha entre Opus 4.8, Sonnet 5 ou Haiku 4.5 |
-| **Login por browser** | Reaproveita o login OAuth do Claude Code / plugin do VS Code — sem exportar chave de API |
+| **Assistente IA** | Gera um rascunho via Claude e o mantém em prévia não acionável; Codex e Google/Antigravity exibem apenas status fail-closed |
+| **Seletor de provedor/modelo** | Mostra somente os modelos permitidos para o provedor selecionado |
+| **Autenticação local** | Reutiliza apenas a sessão já autenticada na CLI do provedor — o app não lê tokens, cookies ou arquivos de credenciais |
 | **Cofre Bitwarden** | Busca credenciais no seu cofre Bitwarden (via `bw` CLI) e digita a senha direto na janela em foco — sem exibir nem salvar o segredo |
 | Velocidade configurável | Ajuste o intervalo entre teclas em milissegundos |
 | Marcadores embutidos | `[[pause:N]]`, `[[speed:N]]`, `[[key:ctrl+c]]` controlam o comportamento mid-texto |
@@ -32,7 +32,6 @@ AutoTyper é uma ferramenta de desktop desenvolvida em Python que simula digita�
 - Python **3.11** ou superior
 - [`ttkbootstrap`](https://ttkbootstrap.readthedocs.io/) >= 1.20.0
 - [`pynput`](https://pynput.readthedocs.io/) >= 1.7.0
-- [`anthropic`](https://github.com/anthropics/anthropic-sdk-python) >= 0.40.0 *(opcional — só para o Assistente IA)*
 - [**Bitwarden CLI (`bw`)**](https://bitwarden.com/help/cli/) *(opcional — só para o Cofre Bitwarden; instalação externa, ver abaixo)*
 
 ---
@@ -85,22 +84,14 @@ Uma combinação (`[[key:mod+mod+tecla]]`) pode misturar modificadores com qualq
 
 ### 🤖 Assistente IA
 
-No painel **🤖 Assistente IA**, descreva em linguagem natural o que você quer digitar (ex.: *"script de backup do /etc com rotação de 7 dias"*, *"comandos para diagnosticar rede que não sobe"*). A IA (Claude) gera o texto/comandos — podendo usar os marcadores de automação quando fizer sentido — e o resultado aparece **no editor para revisão**. Você revisa e clica em **INICIAR** normalmente. Ideal para consoles remotos onde não há copiar-colar.
+No painel **🤖 Assistente IA**, escolha **ChatGPT (Codex)**, **Claude** ou **Google (Antigravity)** e um dos modelos exibidos para esse provedor. Descreva o rascunho desejado (por exemplo, *"script de backup do /etc com rotação de 7 dias"*). A resposta aparece primeiro em uma **prévia não acionável**: ela não altera o editor e nunca aciona o teclado. Após revisar, use **Inserir saída gerada**; só então revise o editor e clique em **INICIAR** normalmente.
 
-- **Seletor de modelo:** escolha **Opus 4.8** (mais capaz), **Sonnet 5** (equilíbrio) ou **Haiku 4.5** (mais rápido/leve) no combo ao lado do campo.
-- **Segurança:** o texto atual só é substituído quando a primeira parte da resposta chega, e `Ctrl+Z` recupera o conteúdo anterior.
+- **Segurança:** a saída é normalizada para quebras de linha LF; conteúdo com marcadores `[[...]]` ou caracteres de controle inseguros é recusado ao inserir. A IA não pode criar pausas, teclas especiais ou outros marcadores de automação.
+- **Cancelar:** durante a geração, use **Cancelar**. A prévia é descartada em toda nova geração, cancelamento, erro ou troca de provedor/modelo.
+- **Diagnóstico local:** o painel verifica somente se a CLI instalada já está autenticada; não lê, exibe, salva ou envia tokens, cookies, e-mails ou caminhos de credenciais.
+- **ChatGPT/Codex e Google/Antigravity:** permanecem indisponíveis enquanto o núcleo não conseguir confirmar o contrato de execução contida de cada CLI. Não há fallback automático para outro provedor.
 
-#### Autenticação (sem exportar chave)
-
-O assistente resolve credenciais na mesma ordem que o Claude Code e a CLI da Anthropic, **sem armazenar nada**:
-
-1. Variável de ambiente `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`
-2. Perfil OAuth do `ant auth login` (`~/.config/anthropic/`)
-3. **Login por browser do Claude Code / plugin do VS Code** (`~/.claude/.credentials.json`)
-
-Se você já usa o Claude Code, o item 3 funciona automaticamente — nenhum passo extra. Essa opção consome a cota da sua assinatura Claude (compartilhada com o Claude Code); uso pesado simultâneo de Opus nos dois pode gerar `429` (troque para Haiku nesse caso).
-
-> Sem o pacote `anthropic` ou sem credencial, o painel continua visível e apenas a geração exibe um erro claro — o restante do app não é afetado.
+Atualmente, somente a CLI local já autenticada do **Claude** pode gerar rascunhos, em modo restrito. **Codex** e **Google/Antigravity (agy)** permanecem em modo somente-status/fail-closed: o painel pode informar seu estado local, mas não oferece geração nem fallback. Se uma CLI não estiver instalada, não estiver autenticada ou não puder comprovar execução segura, o restante do app continua disponível.
 
 ### 🔐 Cofre Bitwarden
 
@@ -108,7 +99,7 @@ No painel **🔐 Bitwarden** você desbloqueia seu cofre, busca uma credencial e
 
 **Segurança:** a senha buscada **nunca aparece no editor nem no log**; a senha mestra e o token de sessão trafegam para o `bw` por variável de ambiente (não ficam visíveis na lista de processos); nada é gravado em disco; o cofre é bloqueado ao fechar a janela.
 
-**Fluxo:** Desbloquear (senha mestra) → Buscar (ex.: *iDRAC*) → selecionar → focar a janela de destino → **⌨ Digitar senha** (respeita o *tempo de espera* e o *intervalo* configurados).
+**Fluxo:** informe e-mail + senha mestra → **Entrar** → Buscar (ex.: *iDRAC*) → selecionar → focar a janela de destino → **⌨ Digitar senha** (respeita o *tempo de espera* e o *intervalo* configurados).
 
 #### Dependência: Bitwarden CLI (`bw`)
 
@@ -125,24 +116,11 @@ brew install bitwarden-cli
 sudo snap install bw
 ```
 
-> ⚠️ **Faça `bw login` no terminal antes de abrir o painel.** O AutoTyper **só desbloqueia** o cofre (`bw unlock`) — ele **nunca** faz login, porque isso exigiria lidar com sua senha mestra, 2FA e verificação de dispositivo. Se você tentar desbloquear sem ter feito login, o app mostra a mensagem *"você não está logado no Bitwarden. Rode 'bw login'…"*.
+O app faz `bw login` não interativo diretamente e mantém a chave de sessão apenas na memória do processo; não é preciso executar `bw login` antes nem exportar `BW_SESSION`. Senha mestra passa somente por `BW_PASSWORD` no ambiente do subprocesso, nunca por argumentos. O app não aceita nem envia códigos 2FA, para não expô-los nos argumentos de processo.
 
-Faça login **uma vez** pelo terminal (e-mail + senha + 2FA). Na primeira vez, o Bitwarden pode exigir uma verificação de dispositivo — ele envia um **OTP para o seu e-mail** que você digita no terminal:
+> ⚠️ A CLI do Bitwarden aceita 2FA não interativo com `--method` e `--code`, mas o AutoTyper deliberadamente não oferece isso: o TOTP ficaria exposto nos argumentos do processo. Contas com 2FA e verificações de novo dispositivo devem concluir um fluxo externo/CLI do Bitwarden antes. Para servidor próprio/Vaultwarden, execute antes `bw config server https://seu-servidor`. Se a CLI já estiver autenticada, o AutoTyper confirma que o e-mail é o mesmo antes de desbloqueá-la; nunca chama `bw logout` nem destrói o login externo existente.
 
-```bash
-# Servidor próprio (self-hosted / Vaultwarden): configure o servidor ANTES do login
-bw config server https://seu-servidor
-
-bw login
-# ? Email address: voce@exemplo.com
-# ? Master password: [hidden]
-# ? New device verification required. Enter OTP sent to login email: 123456
-# You are logged in!
-```
-
-O login persiste entre sessões — você não precisa repeti-lo a cada vez, só o desbloqueio (com a senha mestra) dentro do app. Para sair de vez: `bw logout`.
-
-> Sem o `bw` no PATH (ou sem `bw login` feito), o painel continua visível e apenas as ações do Bitwarden exibem um erro claro — o restante do app não é afetado.
+> Sem o `bw` no PATH, o painel continua visível e apenas as ações do Bitwarden exibem um erro claro — o restante do app não é afetado.
 
 ### Modo headless (sem GUI)
 

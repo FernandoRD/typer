@@ -2,6 +2,7 @@
 
 import enum
 import platform
+import unicodedata
 from dataclasses import dataclass
 
 TRANSLATIONS: dict[str, dict[str, str]] = {
@@ -74,39 +75,76 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "prof_custom":    "Custom",
         # AI assistant
         "ai_title":         " 🤖 AI Assistant ",
-        "ai_prompt_label":  "Describe what you want typed (commands, script, config…):",
+        "ai_prompt_label":  "Describe what you want drafted (commands, script, config…):",
+        "ai_provider_label": "Provider:",
+        "ai_model_label":   "Model:",
+        "ai_effort_label":  "Effort:",
+        "ai_preview_label": "Preview (not inserted or typed):",
         "ai_generate_btn":  "✨ Generate",
         "ai_generating_btn":"⏳ Generating…",
-        "ai_hint":          "Generated text lands in the editor below — review it, then press START.",
+        "ai_cancel_btn":    "Cancel",
+        "ai_apply_btn":     "Insert generated output",
+        "ai_hint":          "Generation stays in this preview. Review it, then explicitly insert it into the editor.",
         "ai_generating":    "Generating with AI…",
-        "ai_done":          "AI generation complete — review before typing.",
+        "ai_checking":      "Checking local provider status…",
+        "ai_cancelling":    "Cancelling AI generation…",
+        "ai_done":          "AI generation complete — review the preview, then explicitly insert it.",
+        "ai_applied":       "Generated output inserted into the editor. Review before typing.",
+        "ai_preview_rejected": "Generated output was not inserted: automation markers or unsafe control characters are not allowed.",
+        "ai_provider_unavailable": "{provider} is unavailable on this device.",
+        "ai_provider_unauthenticated": "{provider} is not authenticated locally.",
+        "ai_provider_unsafe": "{provider} is unavailable because safe execution cannot be confirmed.",
+        "ai_provider_ready": "{provider} is ready. Authentication is checked locally only.",
         "ai_err_empty":     "Error: describe what you want the AI to type first.",
-        "ai_err_auth":      "Error: not authenticated. Log in with your Claude Code / VS Code browser session, run 'ant auth login', or set ANTHROPIC_API_KEY.",
-        "ai_err_lib":       "Error: the 'anthropic' package is not installed (pip install anthropic).",
+        "ai_err_auth":      "Error: the selected provider is not authenticated locally.",
+        "ai_err_lib":       "Error: the selected provider is unavailable.",
         "ai_err_api":       "AI error: {e}",
         # Bitwarden vault
         "bw_title":         " 🔐 Bitwarden ",
+        "bw_email_label":   "Email:",
         "bw_pw_label":      "Master password:",
-        "bw_unlock_btn":    "🔓 Unlock",
+        "bw_unlock_btn":    "🔓 Sign in",
         "bw_lock_btn":      "🔒 Lock",
         "bw_search_label":  "Search credential:",
         "bw_search_btn":    "🔍 Search",
         "bw_type_btn":      "⌨ Type password",
-        "bw_hint":          "Unlock, search an item, then type its password into the focused window. Nothing is shown or saved.",
-        "bw_unlocking":     "Unlocking vault…",
+        "bw_totp_btn":      "🔢 Show OTP",
+        "bw_passkey_btn":   "🔑 Credential passkey details",
+        "bw_passkeys":      "Passkeys: {n}",
+        "bw_passkey_details_none": "Credential passkey details appear here on request; private key material remains protected.",
+        "bw_passkey_details_title": "Credential passkey details (private material protected):",
+        "bw_passkey_number": "Passkey {n}",
+        "bw_passkey_credential_id": "Credential ID: {value}",
+        "bw_passkey_rp_id": "RP ID/domain: {value}",
+        "bw_passkey_user_handle": "User handle: {value}",
+        "bw_metadata_none": "Passkey metadata and OTP appear here only on request.",
+        "bw_totp_value":    "Current OTP: {code}",
+        "bw_hint":          "Sign in with your Bitwarden email and master password. Two-factor or device verification must be completed in the Bitwarden CLI. Passwords are typed directly; OTPs are shown only when requested and are not saved.",
+        "bw_unlocking":     "Signing in to vault…",
         "bw_unlocked":      "Vault unlocked.",
         "bw_locked":        "Vault locked.",
         "bw_searching":     "Searching…",
         "bw_found":         "{n} credential(s) found.",
         "bw_none":          "No credentials matched.",
         "bw_fetching":      "Fetching password…",
+        "bw_fetching_totp": "Fetching current OTP…",
+        "bw_busy":         "Bitwarden is busy or typing is active. Wait for the current operation to finish.",
+        "bw_fetching_passkey": "Fetching credential passkey details…",
+        "bw_totp_ready":    "Current OTP displayed.",
+        "bw_passkey_ready": "Credential passkey details displayed.",
         "bw_typing_pw":     "Typing password into the focused window…",
-        "bw_err_lib":       "Error: Bitwarden CLI ('bw') not found on PATH. Install it and run 'bw login' first.",
+        "bw_err_lib":       "Error: Bitwarden CLI ('bw') not found on PATH. Install it first.",
+        "bw_err_empty_email": "Error: enter your Bitwarden email.",
         "bw_err_locked":    "Error: unlock the vault first.",
         "bw_err_empty_pw":  "Error: enter your master password.",
         "bw_err_empty_q":   "Error: type something to search for.",
         "bw_err_no_sel":    "Error: select a credential first.",
-        "bw_err_login":     "Error: not logged in to Bitwarden. Run 'bw login' in a terminal first, then unlock here.",
+        "bw_err_no_totp":   "Error: the selected credential has no OTP.",
+        "bw_err_no_passkey": "Error: the selected credential has no passkey.",
+        "bw_err_login":     "Error: Bitwarden is not authenticated. Enter your email and master password, then sign in.",
+        "bw_err_2fa":       "Error: Bitwarden requires two-factor authentication. Complete login in the Bitwarden CLI, then return here.",
+        "bw_err_device_verification": "Error: Bitwarden requires new-device verification. Complete it in the Bitwarden CLI, then return here.",
+        "bw_err_identity":  "Error: the Bitwarden CLI is signed in with a different or unverifiable account.",
         "bw_err_api":       "Bitwarden error: {e}",
     },
     "pt": {
@@ -178,39 +216,76 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "prof_custom":    "Personalizado",
         # Assistente IA
         "ai_title":         " 🤖 Assistente IA ",
-        "ai_prompt_label":  "Descreva o que quer digitar (comandos, script, configuração…):",
+        "ai_prompt_label":  "Descreva o que quer gerar (comandos, script, configuração…):",
+        "ai_provider_label": "Provedor:",
+        "ai_model_label":   "Modelo:",
+        "ai_effort_label":  "Esforço:",
+        "ai_preview_label": "Prévia (não inserida nem digitada):",
         "ai_generate_btn":  "✨ Gerar",
         "ai_generating_btn":"⏳ Gerando…",
-        "ai_hint":          "O texto gerado aparece no editor abaixo — revise e depois clique em INICIAR.",
+        "ai_cancel_btn":    "Cancelar",
+        "ai_apply_btn":     "Inserir saída gerada",
+        "ai_hint":          "A geração fica nesta prévia. Revise e então insira-a explicitamente no editor.",
         "ai_generating":    "Gerando com IA…",
-        "ai_done":          "Geração da IA concluída — revise antes de digitar.",
+        "ai_checking":      "Verificando o estado local do provedor…",
+        "ai_cancelling":    "Cancelando geração da IA…",
+        "ai_done":          "Geração da IA concluída — revise a prévia e insira-a explicitamente.",
+        "ai_applied":       "Saída gerada inserida no editor. Revise antes de digitar.",
+        "ai_preview_rejected": "A saída gerada não foi inserida: marcadores de automação ou controles inseguros não são permitidos.",
+        "ai_provider_unavailable": "{provider} está indisponível neste dispositivo.",
+        "ai_provider_unauthenticated": "{provider} não está autenticado localmente.",
+        "ai_provider_unsafe": "{provider} está indisponível porque a execução segura não pôde ser confirmada.",
+        "ai_provider_ready": "{provider} está pronto. A autenticação é verificada somente localmente.",
         "ai_err_empty":     "Erro: descreva primeiro o que a IA deve digitar.",
-        "ai_err_auth":      "Erro: não autenticado. Faça login pelo browser (Claude Code / VS Code), rode 'ant auth login' ou defina ANTHROPIC_API_KEY.",
-        "ai_err_lib":       "Erro: o pacote 'anthropic' não está instalado (pip install anthropic).",
+        "ai_err_auth":      "Erro: o provedor selecionado não está autenticado localmente.",
+        "ai_err_lib":       "Erro: o provedor selecionado está indisponível.",
         "ai_err_api":       "Erro da IA: {e}",
         # Cofre Bitwarden
         "bw_title":         " 🔐 Bitwarden ",
+        "bw_email_label":   "E-mail:",
         "bw_pw_label":      "Senha mestra:",
-        "bw_unlock_btn":    "🔓 Desbloquear",
+        "bw_unlock_btn":    "🔓 Entrar",
         "bw_lock_btn":      "🔒 Bloquear",
         "bw_search_label":  "Buscar credencial:",
         "bw_search_btn":    "🔍 Buscar",
         "bw_type_btn":      "⌨ Digitar senha",
-        "bw_hint":          "Desbloqueie, busque um item e digite a senha na janela em foco. Nada é exibido nem salvo.",
-        "bw_unlocking":     "Desbloqueando cofre…",
+        "bw_totp_btn":      "🔢 Ver OTP",
+        "bw_passkey_btn":   "🔑 Detalhes da chave da credencial",
+        "bw_passkeys":      "Chaves de acesso: {n}",
+        "bw_passkey_details_none": "Os detalhes da chave de acesso da credencial aparecem aqui sob demanda; o material privado permanece protegido.",
+        "bw_passkey_details_title": "Detalhes da chave de acesso da credencial (material privado protegido):",
+        "bw_passkey_number": "Chave de acesso {n}",
+        "bw_passkey_credential_id": "ID da credencial: {value}",
+        "bw_passkey_rp_id": "RP ID/domínio: {value}",
+        "bw_passkey_user_handle": "User handle: {value}",
+        "bw_metadata_none": "Metadados de chaves de acesso e OTP aparecem aqui somente sob demanda.",
+        "bw_totp_value":    "OTP atual: {code}",
+        "bw_hint":          "Entre com seu e-mail Bitwarden e senha mestra. A autenticação em dois fatores ou verificação de dispositivo deve ser concluída na CLI do Bitwarden. Senhas são digitadas diretamente; OTPs só aparecem sob demanda e não são salvos.",
+        "bw_unlocking":     "Entrando no cofre…",
         "bw_unlocked":      "Cofre desbloqueado.",
         "bw_locked":        "Cofre bloqueado.",
         "bw_searching":     "Buscando…",
         "bw_found":         "{n} credencial(is) encontrada(s).",
         "bw_none":          "Nenhuma credencial encontrada.",
         "bw_fetching":      "Obtendo senha…",
+        "bw_fetching_totp": "Obtendo OTP atual…",
+        "bw_busy":         "O Bitwarden está ocupado ou a digitação está ativa. Aguarde a operação atual terminar.",
+        "bw_fetching_passkey": "Obtendo detalhes da chave da credencial…",
+        "bw_totp_ready":    "OTP atual exibido.",
+        "bw_passkey_ready": "Detalhes da chave da credencial exibidos.",
         "bw_typing_pw":     "Digitando a senha na janela em foco…",
-        "bw_err_lib":       "Erro: CLI do Bitwarden ('bw') não encontrada no PATH. Instale-a e rode 'bw login' antes.",
+        "bw_err_lib":       "Erro: CLI do Bitwarden ('bw') não encontrada no PATH. Instale-a primeiro.",
+        "bw_err_empty_email": "Erro: informe seu e-mail Bitwarden.",
         "bw_err_locked":    "Erro: desbloqueie o cofre primeiro.",
         "bw_err_empty_pw":  "Erro: informe a senha mestra.",
         "bw_err_empty_q":   "Erro: digite algo para buscar.",
         "bw_err_no_sel":    "Erro: selecione uma credencial primeiro.",
-        "bw_err_login":     "Erro: você não está logado no Bitwarden. Rode 'bw login' num terminal antes e então desbloqueie aqui.",
+        "bw_err_no_totp":   "Erro: a credencial selecionada não tem OTP.",
+        "bw_err_no_passkey": "Erro: a credencial selecionada não tem chave de acesso.",
+        "bw_err_login":     "Erro: Bitwarden não está autenticado. Informe e-mail e senha mestra e entre.",
+        "bw_err_2fa":       "Erro: Bitwarden exige autenticação em dois fatores. Conclua o login na CLI do Bitwarden e volte aqui.",
+        "bw_err_device_verification": "Erro: Bitwarden exige verificação de novo dispositivo. Conclua-a na CLI do Bitwarden e volte aqui.",
+        "bw_err_identity":  "Erro: a CLI do Bitwarden está autenticada em uma conta diferente ou não verificável.",
         "bw_err_api":       "Erro do Bitwarden: {e}",
     },
 }
@@ -237,12 +312,6 @@ def platform_mono_font(size: int = 13) -> tuple[str, int]:
     return (fonts.get(platform.system(), "Monospace"), size)
 
 
-# ---------------------------------------------------------------------------
-# AI assistant (Anthropic Claude)
-# ---------------------------------------------------------------------------
-AI_MODEL = "claude-opus-4-8"   # default selection, used as a last-resort id
-
-
 @dataclass(frozen=True)
 class ModelInfo:
     id: str
@@ -250,24 +319,11 @@ class ModelInfo:
     supports_adaptive: bool          # accepts thinking={"type": "adaptive"}
     effort_levels: tuple[str, ...]   # supported output_config.effort values
 
-
-# Used only when the live Models API can't be reached — no `anthropic` package,
-# no credentials, or a network/API error. ai.list_models() fetches the real,
-# current list (with real capabilities) at runtime, so this fallback is never
-# the source of truth and shouldn't need editing when a new model ships.
-AI_FALLBACK_MODELS: list[ModelInfo] = [
-    ModelInfo("claude-fable-5",   "Fable 5",   True,  ("low", "medium", "high", "xhigh", "max")),
-    ModelInfo("claude-opus-4-8",  "Opus 4.8",  True,  ("low", "medium", "high", "xhigh", "max")),
-    ModelInfo("claude-sonnet-5",  "Sonnet 5",  True,  ("low", "medium", "high", "xhigh", "max")),
-    ModelInfo("claude-haiku-4-5", "Haiku 4.5", False, ()),
-]
-
-# System prompt shared by both languages, with a per-language instruction on
-# what language to write comments in. Output goes straight into the typing
-# buffer, so the model must return only the raw text to be typed.
+# System prompt shared by both languages.  Generated text first goes through a
+# non-actionable preview, then needs an explicit user insertion before typing.
 _AI_SYSTEM_BASE = """\
 You generate text that an auto-typing tool will type keystroke-by-keystroke \
-into the currently focused OS window. The main use case is remote server \
+into a draft for an auto-typing tool. The main use case is remote server \
 consoles (KVM over IP, iDRAC, iLO, serial) where the clipboard and paste are \
 unavailable, so everything must be typed.
 
@@ -276,17 +332,12 @@ OUTPUT RULES (critical):
 commentary, no surrounding prose.
 - Never wrap the output in Markdown code fences (```), quotes, or headings — \
 they would be typed literally.
-- The output is inserted verbatim. Each newline you emit becomes an Enter \
-keypress, so a trailing newline runs the last command.
+- The output is reviewed and explicitly inserted by the user before it can be \
+typed. Each newline may later become an Enter keypress.
 - Prefer POSIX-portable commands unless the user specifies an OS or shell.
 
-AUTOMATION MARKERS (optional — use only when timing or special keys are \
-actually needed, otherwise plain text is better):
-- [[pause:N]]        wait N seconds (e.g. after starting a service)
-- [[speed:N]]        set the typing interval to N milliseconds
-- [[speed:reset]]    restore the base typing speed
-- [[key:name]]       press a special key or chord, e.g. [[key:enter]], \
-[[key:tab]], [[key:ctrl+c]], [[key:F5]], [[key:up]]
+Never emit AutoTyper automation markers such as [[pause:N]], [[speed:N]], or \
+[[key:name]]. They are rejected by the application.
 
 SAFETY: If the request implies a destructive or irreversible action \
 (e.g. rm -rf, mkfs, dd onto a disk, DROP DATABASE), still produce it when it \
@@ -303,3 +354,21 @@ _AI_LANG_NOTE = {
 def ai_system_prompt(lang: str) -> str:
     note = _AI_LANG_NOTE.get(lang, _AI_LANG_NOTE["en"])
     return f"{_AI_SYSTEM_BASE}\n{note}"
+
+
+def normalize_ai_output(text: str) -> str:
+    """Use one newline representation in previews and the typing editor."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def is_safe_ai_output(text: str) -> bool:
+    """Reject text that could turn a reviewed draft into typing automation."""
+    if not isinstance(text, str):
+        return False
+    text = normalize_ai_output(text)
+    if "[[" in text or "]]" in text:
+        return False
+    return all(
+        char in "\n\t" or unicodedata.category(char) not in {"Cc", "Cf"}
+        for char in text
+    )
